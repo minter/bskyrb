@@ -21,26 +21,27 @@ module Bskyrb
 
       # Regex patterns
       mention_pattern = /(^|\s|\()(@)([a-zA-Z0-9.-]+)(\b)/
-      link_pattern = URI.regexp
+      link_pattern = URI::DEFAULT_PARSER.make_regexp
+      hashtag_pattern = /(?<![\w#])(#)([a-zA-Z0-9_]+)(?!\w)/
 
       # Find mentions
       text.enum_for(:scan, mention_pattern).each do |m|
         index_start = Regexp.last_match.offset(0).first
         index_end = Regexp.last_match.offset(0).last
-        did = resolve_handle(@pds, (m.join("").strip)[1..-1])["did"]
+        did = resolve_handle(@pds, m.join("").strip[1..-1])["did"]
         unless did.nil?
           facets.push(
             "$type" => "app.bsky.richtext.facet",
             "index" => {
               "byteStart" => index_start,
-              "byteEnd" => index_end,
+              "byteEnd" => index_end
             },
             "features" => [
               {
                 "did" => did, # this is the matched mention
-                "$type" => "app.bsky.richtext.facet#mention",
-              },
-            ],
+                "$type" => "app.bsky.richtext.facet#mention"
+              }
+            ]
           )
         end
       end
@@ -55,14 +56,34 @@ module Bskyrb
           "$type" => "app.bsky.richtext.facet",
           "index" => {
             "byteStart" => index_start,
-            "byteEnd" => index_end,
+            "byteEnd" => index_end
           },
           "features" => [
             {
               "uri" => URI.parse("#{m[0]}://#{path}/").normalize.to_s, # this is the matched link
-              "$type" => "app.bsky.richtext.facet#link",
-            },
-          ],
+              "$type" => "app.bsky.richtext.facet#link"
+            }
+          ]
+        )
+      end
+
+      # Find hashtags
+      text.enum_for(:scan, hashtag_pattern).each do |m|
+        index_start = Regexp.last_match.offset(0).first
+        index_end = Regexp.last_match.offset(0).last
+        tag = m[1] # The hashtag content is now in the second capture group
+        facets.push(
+          "$type" => "app.bsky.richtext.facet",
+          "index" => {
+            "byteStart" => index_start,
+            "byteEnd" => index_end
+          },
+          "features" => [
+            {
+              "tag" => tag.gsub(/^#/, ""), # Remove the leading '#' from the hashtag
+              "$type" => "app.bsky.richtext.facet#tag"
+            }
+          ]
         )
       end
 
@@ -88,11 +109,11 @@ module Bskyrb
         text: @text,
         createdAt: @timestamp,
         "$type": "app.bsky.feed.post",
-        facets: @facets,
+        facets: @facets
       }
     end
 
-    def create_facets!()
+    def create_facets!
       @facets = create_facets(@text)
     end
   end
