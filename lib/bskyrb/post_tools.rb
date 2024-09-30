@@ -72,8 +72,8 @@ module Bskyrb
               }
             ]
           )
-        rescue URI::InvalidURIError => e
-          puts "Debug: Invalid URI: #{e.message}"  # Debug output
+        rescue URI::InvalidURIError
+          # Silently skip invalid URIs
         end
       end
 

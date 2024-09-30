@@ -22,15 +22,30 @@ module Bskyrb
     end
 
     def get_post_by_url(url, depth = 10)
+      at_uri = at_post_link(session.pds, url)
       query = Bskyrb::AppBskyFeedGetpostthread::GetPostThread::Input.new.tap do |q|
-        q.uri = at_post_link(session.pds, url)
+        q.uri = at_uri
         q.depth = depth
       end
+
+      full_uri = get_post_thread_uri(session.pds, query)
+
       res = HTTParty.get(
-        get_post_thread_uri(session.pds, query),
+        full_uri,
         headers: default_authenticated_headers(session)
       )
-      Bskyrb::AppBskyFeedDefs::PostView.from_hash res["thread"]["post"]
+
+      if res.success?
+        if res["thread"] && res["thread"]["post"]
+          Bskyrb::AppBskyFeedDefs::PostView.from_hash res["thread"]["post"]
+        else
+          raise "Unexpected response structure: 'thread' or 'post' key missing"
+        end
+      else
+        raise "API request failed: #{res.code} - #{res.message}"
+      end
+    rescue => e
+      nil
     end
 
     def upload_blob(blob_path, content_type)
@@ -45,7 +60,7 @@ module Bskyrb
 
     def create_post_or_reply(text, reply_to: nil, embed_url: nil)
       facets = create_facets(text) || []  # Ensure facets is always an array
-      
+
       input = {
         "collection" => "app.bsky.feed.post",
         "$type" => "app.bsky.feed.post",
@@ -81,7 +96,10 @@ module Bskyrb
 
     def create_reply(replylink, text, embed_url: nil)
       reply_to = get_post_by_url(replylink)
-      create_post_or_reply(text, reply_to:, embed_url:)
+      if reply_to.nil?
+        raise "Failed to fetch the post to reply to"
+      end
+      create_post_or_reply(text, reply_to: reply_to, embed_url: embed_url)
     end
 
     def profile_action(username, type)
