@@ -17,7 +17,7 @@ module Bskyrb
       HTTParty.post(
         create_record_uri(session.pds),
         body: input.to_json,
-        headers: default_authenticated_headers(session),
+        headers: default_authenticated_headers(session)
       )
     end
 
@@ -28,7 +28,7 @@ module Bskyrb
       end
       res = HTTParty.get(
         get_post_thread_uri(session.pds, query),
-        headers: default_authenticated_headers(session),
+        headers: default_authenticated_headers(session)
       )
       Bskyrb::AppBskyFeedDefs::PostView.from_hash res["thread"]["post"]
     end
@@ -39,7 +39,7 @@ module Bskyrb
       HTTParty.post(
         upload_blob_uri(session.pds),
         body: image_bytes,
-        headers: default_authenticated_headers(session).merge("Content-Type" => content_type),
+        headers: default_authenticated_headers(session).merge("Content-Type" => content_type)
       )
     end
 
@@ -52,19 +52,19 @@ module Bskyrb
           "$type" => "app.bsky.feed.post",
           "createdAt" => DateTime.now.iso8601(3),
           "text" => text,
-          "facets" => create_facets(text),
-        },
+          "facets" => create_facets(text)
+        }
       }
       if reply_to
         input.record["reply"] = {
           "parent" => {
             "uri" => reply_to.uri,
-            "cid" => reply_to.cid,
+            "cid" => reply_to.cid
           },
           "root" => {
             "uri" => reply_to.uri,
-            "cid" => reply_to.cid,
-          },
+            "cid" => reply_to.cid
+          }
         }
       end
       create_record(input)
@@ -86,8 +86,8 @@ module Bskyrb
         "record" => {
           "subject" => resolve_handle(session.pds, username)["did"],
           "createdAt" => DateTime.now.iso8601(3),
-          "$type" => type,
-        },
+          "$type" => type
+        }
       })
       create_record(input)
     end
@@ -99,11 +99,11 @@ module Bskyrb
         record: {
           subject: {
             uri: post.uri,
-            cid: post.cid,
+            cid: post.cid
           },
           createdAt: DateTime.now.iso8601(3),
-          "$type": action_type,
-        },
+          "$type": action_type
+        }
       }
       create_record(data)
     end
@@ -129,8 +129,8 @@ module Bskyrb
     def mute(username)
       HTTParty.post(
         mute_actor_uri(session.pds),
-        body: { actor: resolve_handle(username) }.to_json,
-        headers: default_authenticated_headers(session),
+        body: {actor: resolve_handle(username)}.to_json,
+        headers: default_authenticated_headers(session)
       )
     end
 
