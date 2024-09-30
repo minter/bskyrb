@@ -24,7 +24,7 @@ module Bskyrb
 
       # Regex patterns
       mention_pattern = /(^|\s|\()(@)([a-zA-Z0-9.-]+)(\b)/
-      link_pattern = URI::DEFAULT_PARSER.make_regexp
+      link_pattern = URI::DEFAULT_PARSER.make_regexp(%w[http https])
       hashtag_pattern = /(?<![\w#])(#)([a-zA-Z0-9_]+)(?!\w)/
 
       # Find mentions
@@ -50,24 +50,31 @@ module Bskyrb
       end
 
       # Find links
-      text.enum_for(:scan, link_pattern).each do |m|
-        index_start = text[0...Regexp.last_match.begin(0)].bytesize
-        index_end = text[0...Regexp.last_match.end(0)].bytesize
-        m.compact!
-        path = "#{m[1]}#{m[2..-1].join("")}".strip
-        facets.push(
-          "$type" => "app.bsky.richtext.facet",
-          "index" => {
-            "byteStart" => index_start,
-            "byteEnd" => index_end
-          },
-          "features" => [
-            {
-              "uri" => URI.parse("#{m[0]}://#{path}/").normalize.to_s, # this is the matched link
-              "$type" => "app.bsky.richtext.facet#link"
-            }
-          ]
-        )
+      text.scan(link_pattern) do |match|
+        next if match.nil? || match.empty?
+        full_match = match.join
+        index_start = text.index(full_match).to_s.bytesize
+        index_end = (index_start + full_match.bytesize)
+
+        begin
+          uri = URI.parse(full_match)
+          normalized_uri = uri.normalize.to_s
+          facets.push(
+            "$type" => "app.bsky.richtext.facet",
+            "index" => {
+              "byteStart" => index_start,
+              "byteEnd" => index_end
+            },
+            "features" => [
+              {
+                "uri" => normalized_uri,
+                "$type" => "app.bsky.richtext.facet#link"
+              }
+            ]
+          )
+        rescue URI::InvalidURIError => e
+          puts "Debug: Invalid URI: #{e.message}"  # Debug output
+        end
       end
 
       # Find hashtags
@@ -103,13 +110,13 @@ module Bskyrb
       }
 
       doc.css("meta[property^='og:']").each do |meta|
-        case meta['property']
-        when 'og:title'
-          og_data[:title] = meta['content']
-        when 'og:description'
-          og_data[:description] = meta['content']
-        when 'og:image'
-          og_data[:image] = meta['content']
+        case meta["property"]
+        when "og:title"
+          og_data[:title] = meta["content"]
+        when "og:description"
+          og_data[:description] = meta["content"]
+        when "og:image"
+          og_data[:image] = meta["content"]
         end
       end
 
@@ -126,13 +133,13 @@ module Bskyrb
 
     def get_thumb_blob(image_url, client)
       uri = URI.parse(image_url)
-      tempfile = Tempfile.new(['thumb', File.extname(uri.path)])
+      tempfile = Tempfile.new(["thumb", File.extname(uri.path)])
       begin
         # Download the file
-        Net::HTTP.start(uri.host, uri.port, use_ssl: uri.scheme == 'https') do |http|
+        Net::HTTP.start(uri.host, uri.port, use_ssl: uri.scheme == "https") do |http|
           request = Net::HTTP::Get.new uri
           http.request request do |response|
-            File.open(tempfile.path, 'wb') do |io|
+            File.open(tempfile.path, "wb") do |io|
               response.read_body do |chunk|
                 io.write chunk
               end
@@ -141,16 +148,16 @@ module Bskyrb
         end
 
         # Determine content type
-        content_type = MiniMime.lookup_by_filename(uri.path)&.content_type || 'application/octet-stream'
+        content_type = MiniMime.lookup_by_filename(uri.path)&.content_type || "application/octet-stream"
 
         # Upload the blob
         upload_response = client.upload_blob(tempfile.path, content_type)
 
         {
           "$type" => "blob",
-          "ref" => upload_response['blob']['ref'],
-          "mimeType" => upload_response['blob']['mimeType'],
-          "size" => upload_response['blob']['size']
+          "ref" => upload_response["blob"]["ref"],
+          "mimeType" => upload_response["blob"]["mimeType"],
+          "size" => upload_response["blob"]["size"]
         }
       ensure
         tempfile.close
