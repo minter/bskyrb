@@ -1,6 +1,9 @@
 require "uri"
 require_relative "../atproto/requests"
 require "xrpc"
+require "nokogiri"
+require "tempfile"
+require "mini_mime"
 # module Bskyrb
 #   include Atmosfire
 
@@ -26,8 +29,8 @@ module Bskyrb
 
       # Find mentions
       text.enum_for(:scan, mention_pattern).each do |m|
-        index_start = Regexp.last_match.offset(0).first
-        index_end = Regexp.last_match.offset(0).last
+        index_start = text[0...Regexp.last_match.begin(0)].bytesize
+        index_end = text[0...Regexp.last_match.end(0)].bytesize
         did = resolve_handle(@pds, m.join("").strip[1..-1])["did"]
         unless did.nil?
           facets.push(
@@ -48,8 +51,8 @@ module Bskyrb
 
       # Find links
       text.enum_for(:scan, link_pattern).each do |m|
-        index_start = Regexp.last_match.offset(0).first
-        index_end = Regexp.last_match.offset(0).last
+        index_start = text[0...Regexp.last_match.begin(0)].bytesize
+        index_end = text[0...Regexp.last_match.end(0)].bytesize
         m.compact!
         path = "#{m[1]}#{m[2..-1].join("")}".strip
         facets.push(
@@ -69,8 +72,8 @@ module Bskyrb
 
       # Find hashtags
       text.enum_for(:scan, hashtag_pattern).each do |m|
-        index_start = Regexp.last_match.offset(0).first
-        index_end = Regexp.last_match.offset(0).last
+        index_start = text[0...Regexp.last_match.begin(0)].bytesize
+        index_end = text[0...Regexp.last_match.end(0)].bytesize
         tag = m[1] # The hashtag content is now in the second capture group
         facets.push(
           "$type" => "app.bsky.richtext.facet",
@@ -87,7 +90,72 @@ module Bskyrb
         )
       end
 
-      facets.empty? ? nil : facets
+      facets  # Always return the array, even if it's empty
+    end
+
+    def create_embed(embed_url, client)
+      response = HTTParty.get(embed_url)
+      doc = Nokogiri::HTML.parse(response.body)
+      og_data = {
+        title: nil,
+        description: nil,
+        image: nil
+      }
+
+      doc.css("meta[property^='og:']").each do |meta|
+        case meta['property']
+        when 'og:title'
+          og_data[:title] = meta['content']
+        when 'og:description'
+          og_data[:description] = meta['content']
+        when 'og:image'
+          og_data[:image] = meta['content']
+        end
+      end
+
+      {
+        "$type" => "app.bsky.embed.external",
+        "external" => {
+          "uri" => embed_url,
+          "title" => og_data[:title],
+          "description" => og_data[:description],
+          "thumb" => get_thumb_blob(og_data[:image], client)
+        }
+      }
+    end
+
+    def get_thumb_blob(image_url, client)
+      uri = URI.parse(image_url)
+      tempfile = Tempfile.new(['thumb', File.extname(uri.path)])
+      begin
+        # Download the file
+        Net::HTTP.start(uri.host, uri.port, use_ssl: uri.scheme == 'https') do |http|
+          request = Net::HTTP::Get.new uri
+          http.request request do |response|
+            File.open(tempfile.path, 'wb') do |io|
+              response.read_body do |chunk|
+                io.write chunk
+              end
+            end
+          end
+        end
+
+        # Determine content type
+        content_type = MiniMime.lookup_by_filename(uri.path)&.content_type || 'application/octet-stream'
+
+        # Upload the blob
+        upload_response = client.upload_blob(tempfile.path, content_type)
+
+        {
+          "$type" => "blob",
+          "ref" => upload_response['blob']['ref'],
+          "mimeType" => upload_response['blob']['mimeType'],
+          "size" => upload_response['blob']['size']
+        }
+      ensure
+        tempfile.close
+        tempfile.unlink
+      end
     end
   end
 end

@@ -43,7 +43,9 @@ module Bskyrb
       )
     end
 
-    def create_post_or_reply(text, reply_to = nil)
+    def create_post_or_reply(text, reply_to: nil, embed_url: nil)
+      facets = create_facets(text) || []  # Ensure facets is always an array
+      
       input = {
         "collection" => "app.bsky.feed.post",
         "$type" => "app.bsky.feed.post",
@@ -52,11 +54,11 @@ module Bskyrb
           "$type" => "app.bsky.feed.post",
           "createdAt" => DateTime.now.iso8601(3),
           "text" => text,
-          "facets" => create_facets(text)
+          "facets" => facets
         }
       }
       if reply_to
-        input.record["reply"] = {
+        input["record"]["reply"] = {
           "parent" => {
             "uri" => reply_to.uri,
             "cid" => reply_to.cid
@@ -67,16 +69,19 @@ module Bskyrb
           }
         }
       end
+      if embed_url
+        input["record"]["embed"] = create_embed(embed_url, self)
+      end
       create_record(input)
     end
 
-    def create_post(text)
-      create_post_or_reply(text)
+    def create_post(text, embed_url: nil)
+      create_post_or_reply(text, embed_url:)
     end
 
-    def create_reply(replylink, text)
+    def create_reply(replylink, text, embed_url: nil)
       reply_to = get_post_by_url(replylink)
-      create_post_or_reply(text, reply_to)
+      create_post_or_reply(text, reply_to:, embed_url:)
     end
 
     def profile_action(username, type)
