@@ -4,6 +4,7 @@ require "xrpc"
 require "nokogiri"
 require "tempfile"
 require "mini_mime"
+require "addressable/uri"
 # module Bskyrb
 #   include Atmosfire
 
@@ -133,12 +134,12 @@ module Bskyrb
     end
 
     def get_thumb_blob(image_url, client)
-      uri = URI.parse(image_url)
+      uri = Addressable::URI.parse(image_url).normalize
       tempfile = Tempfile.new(["thumb", File.extname(uri.path)])
       begin
         # Download the file
         Net::HTTP.start(uri.host, uri.port, use_ssl: uri.scheme == "https") do |http|
-          request = Net::HTTP::Get.new uri
+          request = Net::HTTP::Get.new(uri.to_s)
           http.request request do |response|
             File.open(tempfile.path, "wb") do |io|
               response.read_body do |chunk|

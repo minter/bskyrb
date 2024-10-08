@@ -23,4 +23,5 @@ Gem::Specification.new do |spec|
   spec.add_runtime_dependency "xrpc", ">= 0.1.5"
   spec.add_runtime_dependency "nokogiri", ">= 1.16.1"
   spec.add_runtime_dependency "mini_mime", ">= 1.1.2"
+  spec.add_runtime_dependency "addressable", ">= 2.8.1"
 end
