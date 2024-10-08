@@ -102,7 +102,7 @@ module Bskyrb
     end
 
     def create_post(text, embed_url: nil)
-      create_post_or_reply(text, embed_url:)
+      create_post_or_reply(text, embed_url: embed_url)
     end
 
     def create_reply(replylink, text, embed_url: nil)
@@ -111,37 +111,7 @@ module Bskyrb
         raise "Failed to fetch the post to reply to"
       end
 
-      root = find_root_post(reply_to)
-
-      facets = create_facets(text) || []  # Ensure facets is always an array
-
-      input = {
-        "collection" => "app.bsky.feed.post",
-        "$type" => "app.bsky.feed.post",
-        "repo" => session.did,
-        "record" => {
-          "$type" => "app.bsky.feed.post",
-          "createdAt" => DateTime.now.iso8601(3),
-          "text" => text,
-          "facets" => facets,
-          "reply" => {
-            "parent" => {
-              "uri" => reply_to.uri,
-              "cid" => reply_to.cid
-            },
-            "root" => {
-              "uri" => root.uri,
-              "cid" => root.cid
-            }
-          }
-        }
-      }
-
-      if embed_url
-        input["record"]["embed"] = create_embed(embed_url, self)
-      end
-
-      create_record(input)
+      create_post_or_reply(text, reply_to: reply_to, embed_url: embed_url)
     end
 
     def profile_action(username, type)
