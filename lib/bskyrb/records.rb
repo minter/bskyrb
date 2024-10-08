@@ -72,22 +72,33 @@ module Bskyrb
           "facets" => facets
         }
       }
+
       if reply_to
+        root = find_root_post(reply_to)
         input["record"]["reply"] = {
           "parent" => {
             "uri" => reply_to.uri,
             "cid" => reply_to.cid
           },
           "root" => {
-            "uri" => reply_to.uri,
-            "cid" => reply_to.cid
+            "uri" => root.uri,
+            "cid" => root.cid
           }
         }
       end
+
       if embed_url
         input["record"]["embed"] = create_embed(embed_url, self)
       end
+
       create_record(input)
+    end
+
+    def find_root_post(post)
+      return post unless post.record.respond_to?(:[]) && post.record["reply"]
+
+      root_uri = post.record["reply"]["root"]["uri"]
+      get_post_by_url(root_uri)
     end
 
     def create_post(text, embed_url: nil)
@@ -99,7 +110,38 @@ module Bskyrb
       if reply_to.nil?
         raise "Failed to fetch the post to reply to"
       end
-      create_post_or_reply(text, reply_to: reply_to, embed_url: embed_url)
+
+      root = find_root_post(reply_to)
+
+      facets = create_facets(text) || []  # Ensure facets is always an array
+
+      input = {
+        "collection" => "app.bsky.feed.post",
+        "$type" => "app.bsky.feed.post",
+        "repo" => session.did,
+        "record" => {
+          "$type" => "app.bsky.feed.post",
+          "createdAt" => DateTime.now.iso8601(3),
+          "text" => text,
+          "facets" => facets,
+          "reply" => {
+            "parent" => {
+              "uri" => reply_to.uri,
+              "cid" => reply_to.cid
+            },
+            "root" => {
+              "uri" => root.uri,
+              "cid" => root.cid
+            }
+          }
+        }
+      }
+
+      if embed_url
+        input["record"]["embed"] = create_embed(embed_url, self)
+      end
+
+      create_record(input)
     end
 
     def profile_action(username, type)
