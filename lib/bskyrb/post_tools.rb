@@ -120,15 +120,16 @@ module Bskyrb
         end
       end
 
-      {
+      embed_data = {
         "$type" => "app.bsky.embed.external",
         "external" => {
           "uri" => embed_url,
           "title" => og_data[:title],
-          "description" => og_data[:description],
-          "thumb" => get_thumb_blob(og_data[:image], client)
+          "description" => og_data[:description]
         }
       }
+      embed_data["external"]["thumb"] = get_thumb_blob(og_data[:image], client) if og_data[:image]
+      embed_data
     end
 
     def get_thumb_blob(image_url, client)
