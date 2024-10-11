@@ -1,6 +1,7 @@
 # typed: true
 
 require "bskyrb/post_tools"
+require "mini_magick"
 
 module Bskyrb
   class Client
@@ -50,7 +51,35 @@ module Bskyrb
 
     def upload_blob(blob_path, content_type)
       # only images
-      image_bytes = File.binread(blob_path)
+      max_size = 976 * 1024  # 976KB in bytes
+      file_size = File.size(blob_path)
+
+      if file_size > max_size
+        # Reduce the image size using MiniMagick
+        image = MiniMagick::Image.open(blob_path)
+
+        # Calculate the scaling factor to reduce the size
+        scaling_factor = Math.sqrt(max_size.to_f / file_size)
+        new_width = (image.width * scaling_factor).to_i
+        new_height = (image.height * scaling_factor).to_i
+
+        # Resize the image
+        image.resize "#{new_width}x#{new_height}"
+
+        # Optionally, you can also compress the image
+        image.quality "85"  # Adjust quality as needed (0-100)
+
+        # Save the modified image to a temporary file
+        temp_file = "#{blob_path}.tmp"
+        image.write(temp_file)
+
+        # Use the temporary file for upload
+        image_bytes = File.binread(temp_file)
+        File.delete(temp_file)  # Clean up the temporary file
+      else
+        image_bytes = File.binread(blob_path)  # No changes made here
+      end
+
       HTTParty.post(
         upload_blob_uri(session.pds),
         body: image_bytes,
