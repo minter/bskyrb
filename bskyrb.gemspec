@@ -25,4 +25,5 @@ Gem::Specification.new do |spec|
   spec.add_runtime_dependency "mini_mime", ">= 1.1.2"
   spec.add_runtime_dependency "addressable", ">= 2.8.1"
   spec.add_runtime_dependency "mini_magick", ">= 4.12.0"
+  spec.add_runtime_dependency "logger", ">= 1.5.3"  # Add this line
 end
