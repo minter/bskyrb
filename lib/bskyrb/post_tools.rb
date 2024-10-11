@@ -125,8 +125,8 @@ module Bskyrb
         "$type" => "app.bsky.embed.external",
         "external" => {
           "uri" => embed_url,
-          "title" => og_data[:title],
-          "description" => og_data[:description]
+          "title" => og_data[:title] || "",
+          "description" => og_data[:description] || ""
         }
       }
       embed_data["external"]["thumb"] = get_thumb_blob(og_data[:image], client) if og_data[:image]
@@ -147,20 +147,26 @@ module Bskyrb
               end
             end
           end
+        rescue => e
+          puts "Error downloading image: #{e.message}"
         end
 
         # Determine content type
         content_type = MiniMime.lookup_by_filename(uri.path)&.content_type || "application/octet-stream"
 
         # Upload the blob
-        upload_response = client.upload_blob(tempfile.path, content_type)
-
-        {
-          "$type" => "blob",
-          "ref" => upload_response["blob"]["ref"],
-          "mimeType" => upload_response["blob"]["mimeType"],
-          "size" => upload_response["blob"]["size"]
-        }
+        begin
+          upload_response = client.upload_blob(tempfile.path, content_type)
+          data = {
+            "$type" => "blob",
+            "ref" => upload_response["blob"]["ref"],
+            "mimeType" => upload_response["blob"]["mimeType"],
+            "size" => upload_response["blob"]["size"]
+          }
+          data
+        rescue => e
+          puts "Error uploading image: #{e.message}"
+        end
       ensure
         tempfile.close
         tempfile.unlink
