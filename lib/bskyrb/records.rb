@@ -9,6 +9,10 @@ module Bskyrb
     include PostTools
     attr_reader :session
 
+    # First, let's add these constants at the top of the file
+    JOB_STATE_COMPLETED = "completed"
+    JOB_STATE_FAILED = "failed"
+
     def initialize(session)
       @session = session
       @pds = session.credentials.pds
@@ -50,34 +54,38 @@ module Bskyrb
     end
 
     def upload_blob(blob_path, content_type)
-      # only images
-      max_size = 950 * 1024  # 950KB in bytes
-      file_size = File.size(blob_path)
+      if content_type.include?("image")
+        # only images
+        max_size = 950 * 1024  # 950KB in bytes
+        file_size = File.size(blob_path)
 
-      if file_size > max_size
-        # Reduce the image size using MiniMagick
-        image = MiniMagick::Image.open(blob_path)
+        if file_size > max_size
+          # Reduce the image size using MiniMagick
+          image = MiniMagick::Image.open(blob_path)
 
-        # Calculate the scaling factor to reduce the size
-        scaling_factor = Math.sqrt(max_size.to_f / file_size)
-        new_width = (image.width * scaling_factor).to_i
-        new_height = (image.height * scaling_factor).to_i
+          # Calculate the scaling factor to reduce the size
+          scaling_factor = Math.sqrt(max_size.to_f / file_size)
+          new_width = (image.width * scaling_factor).to_i
+          new_height = (image.height * scaling_factor).to_i
 
-        # Resize the image
-        image.resize "#{new_width}x#{new_height}"
+          # Resize the image
+          image.resize "#{new_width}x#{new_height}"
 
-        # Optionally, you can also compress the image
-        image.quality "85"  # Adjust quality as needed (0-100)
+          # Optionally, you can also compress the image
+          image.quality "85"  # Adjust quality as needed (0-100)
 
-        # Save the modified image to a temporary file
-        temp_file = "#{blob_path}.tmp"
-        image.write(temp_file)
+          # Save the modified image to a temporary file
+          temp_file = "#{blob_path}.tmp"
+          image.write(temp_file)
 
-        # Use the temporary file for upload
-        image_bytes = File.binread(temp_file)
-        File.delete(temp_file)  # Clean up the temporary file
+          # Use the temporary file for upload
+          image_bytes = File.binread(temp_file)
+          File.delete(temp_file)  # Clean up the temporary file
+        else
+          image_bytes = File.binread(blob_path)  # No changes made here
+        end
       else
-        image_bytes = File.binread(blob_path)  # No changes made here
+        image_bytes = File.binread(blob_path)
       end
 
       HTTParty.post(
@@ -87,12 +95,52 @@ module Bskyrb
       )
     end
 
-    def create_post_or_reply(text, reply_to: nil, embed_url: nil)
+    def upload_video_blob(file_path, content_type)
+      service_auth_response = HTTParty.get(
+        get_service_auth_uri(session.pds, session.service_endpoint, "com.atproto.repo.uploadBlob", (Time.now.to_i + 3600).to_s),
+        headers: default_authenticated_headers(session)
+      )
+
+      video_bytes = File.binread(file_path)
+      response = HTTParty.post(
+        upload_video_uri("https://video.bsky.app", session.did, File.basename(file_path)),
+        body: video_bytes,
+        headers: {"Authorization" => "Bearer #{service_auth_response["token"]}", "Content-Type" => content_type, "Content-Length" => video_bytes.size.to_s}
+      )
+      job_id = response["jobId"]
+
+      start_time = Time.now
+      timeout = 300  # 5 minutes timeout
+      job_status_response = nil  # Declare the variable before the loop
+
+      loop do
+        job_status_response = HTTParty.get(
+          get_video_job_status_uri("https://video.bsky.app", job_id),
+          headers: {"Authorization" => "Bearer #{service_auth_response["token"]}"}
+        )
+
+        state = job_status_response["jobStatus"]["state"]
+        break if ["JOB_STATE_COMPLETED", "JOB_STATE_FAILED"].include?(state)
+
+        if Time.now - start_time > timeout
+          raise "Video processing timed out after #{timeout} seconds"
+        end
+
+        sleep(5)
+      end
+
+      if job_status_response["jobStatus"]["state"] == "JOB_STATE_COMPLETED"
+        job_status_response["jobStatus"]["blob"]
+      else
+        raise "Video processing failed: #{job_status_response["jobStatus"]["state"]}"
+      end
+    end
+
+    def create_post_or_reply(text, reply_to: nil, embed_url: nil, embed_images: [], embed_video: nil)
       facets = create_facets(text) || []  # Ensure facets is always an array
 
       input = {
         "collection" => "app.bsky.feed.post",
-        "$type" => "app.bsky.feed.post",
         "repo" => session.did,
         "record" => {
           "$type" => "app.bsky.feed.post",
@@ -117,7 +165,11 @@ module Bskyrb
       end
 
       if embed_url
-        input["record"]["embed"] = create_embed(embed_url, self)
+        input["record"]["embed"] = create_external_embed(embed_url, self)
+      elsif embed_images.any?
+        input["record"]["embed"] = create_image_embed(embed_images, self)
+      elsif embed_video
+        input["record"]["embed"] = create_video_embed(embed_video, self)
       end
 
       create_record(input)
@@ -130,17 +182,44 @@ module Bskyrb
       get_post_by_url(root_uri)
     end
 
-    def create_post(text, embed_url: nil)
-      create_post_or_reply(text, embed_url: embed_url)
+    def create_post(text, embed_url: nil, embed_images: [], embed_video: nil)
+      create_post_or_reply(text, embed_url: embed_url, embed_images: embed_images, embed_video: embed_video)
     end
 
-    def create_reply(replylink, text, embed_url: nil)
+    def create_reply(replylink, text, embed_url: nil, embed_images: [], embed_video: nil)
       reply_to = get_post_by_url(replylink)
       if reply_to.nil?
         raise "Failed to fetch the post to reply to"
       end
 
-      create_post_or_reply(text, reply_to: reply_to, embed_url: embed_url)
+      create_post_or_reply(text, reply_to: reply_to, embed_url: embed_url, embed_images: embed_images, embed_video: embed_video)
+    end
+
+    def get_profile(username)
+      HTTParty.get(
+        get_profile_uri(session.pds, username),
+        headers: default_authenticated_headers(session)
+      )
+    end
+
+    def get_followers(username, cursor: nil)
+      HTTParty.get(
+        get_followers_uri(session.pds, username, cursor),
+        headers: default_authenticated_headers(session)
+      )
+    end
+
+    def get_post_thread(post_url, depth = 10)
+      at_uri = at_post_link(session.pds, post_url)
+      query = Bskyrb::AppBskyFeedGetpostthread::GetPostThread::Input.new.tap do |q|
+        q.uri = at_uri
+        q.depth = depth
+      end
+
+      HTTParty.get(
+        get_post_thread_uri(session.pds, query),
+        headers: default_authenticated_headers(session)
+      )
     end
 
     def profile_action(username, type)

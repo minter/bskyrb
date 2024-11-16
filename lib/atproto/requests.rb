@@ -58,6 +58,30 @@ module ATProto
       "#{pds}/xrpc/app.bsky.feed.getPostThread#{query_obj_to_query_params(query)}"
     end
 
+    def upload_video_uri(pds, did, filename)
+      "#{pds}/xrpc/app.bsky.video.uploadVideo?did=#{did}&name=#{filename}"
+    end
+
+    def get_video_job_status_uri(pds, job_id)
+      "#{pds}/xrpc/app.bsky.video.getJobStatus?jobId=#{job_id}"
+    end
+
+    def get_service_auth_uri(pds, aud, lxm, exp)
+      "#{pds}/xrpc/com.atproto.server.getServiceAuth?aud=#{aud}&lxm=#{lxm}&exp=#{exp}"
+    end
+
+    def get_profile_uri(pds, username)
+      "#{pds}/xrpc/app.bsky.actor.getProfile?actor=#{username}"
+    end
+
+    def get_followers_uri(pds, username, cursor)
+      "#{pds}/xrpc/app.bsky.graph.getFollowers?actor=#{username}&cursor=#{cursor}"
+    end
+
+    def get_post_thread_uri(pds, query)
+      "#{pds}/xrpc/app.bsky.feed.getPostThread#{query_obj_to_query_params(query)}"
+    end
+
     def default_authenticated_headers(session)
       default_headers.merge({
         Authorization: "Bearer #{session.access_token}"

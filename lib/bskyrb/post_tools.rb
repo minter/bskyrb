@@ -101,7 +101,7 @@ module Bskyrb
       facets  # Always return the array, even if it's empty
     end
 
-    def create_embed(embed_url, client)
+    def create_external_embed(embed_url, client)
       response = HTTParty.get(embed_url)
       doc = Nokogiri::HTML.parse(response.body)
       og_data = {
@@ -133,8 +133,40 @@ module Bskyrb
       embed_data
     end
 
-    def get_thumb_blob(image_url, client)
-      uri = Addressable::URI.parse(image_url).normalize
+    def create_image_embed(embed_images, client)
+      # Limited to a maximum of 4 images
+      images = []
+      embed_images[0..3].each do |image|
+        data = if image.is_a?(Hash)
+          get_thumb_blob(image["url"], client)
+        else
+          get_thumb_blob(image, client)
+        end
+      end
+    end
+
+    def create_video_embed(embed_video_file_path, client)
+      data = upload_video(embed_video_file_path, client)
+      {
+        "$type" => "app.bsky.embed.video",
+        "video" => data,
+        "aspectRatio" => get_video_aspect_ratio(embed_video_file_path)
+      }
+    end
+
+    def get_thumb_blob(image, client)
+      case image
+      when String
+        uri = Addressable::URI.parse(image).normalize
+        download_and_upload_image(uri, client)
+      when File, Tempfile
+        upload_image(image, client)
+      else
+        raise ArgumentError, "Invalid image type. Expected String (URL) or File object."
+      end
+    end
+
+    def download_and_upload_image(uri, client)
       tempfile = Tempfile.new(["thumb", File.extname(uri.path)])
       begin
         # Download the file
@@ -147,30 +179,45 @@ module Bskyrb
               end
             end
           end
-        rescue => e
-          puts "Error downloading image: #{e.message}"
         end
-
-        # Determine content type
-        content_type = MiniMime.lookup_by_filename(uri.path)&.content_type || "application/octet-stream"
-
-        # Upload the blob
-        begin
-          upload_response = client.upload_blob(tempfile.path, content_type)
-          data = {
-            "$type" => "blob",
-            "ref" => upload_response["blob"]["ref"],
-            "mimeType" => upload_response["blob"]["mimeType"],
-            "size" => upload_response["blob"]["size"]
-          }
-          data
-        rescue => e
-          puts "Error uploading image: #{e.message}"
-        end
+        upload_image(tempfile, client)
+      rescue => e
+        puts "Error downloading image: #{e.message}"
+        nil
       ensure
         tempfile.close
         tempfile.unlink
       end
+    end
+
+    def upload_image(file, client)
+      content_type = MiniMime.lookup_by_filename(file.path)&.content_type || "application/octet-stream"
+      begin
+        upload_response = client.upload_blob(file.path, content_type)
+        {
+          "$type" => "blob",
+          "ref" => upload_response["blob"]["ref"],
+          "mimeType" => upload_response["blob"]["mimeType"],
+          "size" => upload_response["blob"]["size"]
+        }
+      rescue => e
+        puts "Error uploading image: #{e.message}"
+        nil
+      end
+    end
+
+    def upload_video(file_path, client)
+      content_type = MiniMime.lookup_by_filename(file_path)&.content_type || "application/octet-stream"
+      content_type = "video/mp4" if content_type == "application/mp4"
+      client.upload_video_blob(file_path, content_type)
+    end
+
+    def get_video_aspect_ratio(file_path)
+      video = FFMPEG::Movie.new(file_path)
+      {
+        "width" => video.width,
+        "height" => video.height
+      }
     end
   end
 end

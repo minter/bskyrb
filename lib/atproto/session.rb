@@ -16,7 +16,7 @@ module ATProto
   class Session
     include RequestUtils
 
-    attr_reader :credentials, :pds, :access_token, :refresh_token, :did
+    attr_reader :credentials, :pds, :access_token, :refresh_token, :did, :service_endpoint
 
     def initialize(credentials, should_open = true)
       @credentials = credentials
@@ -36,6 +36,7 @@ module ATProto
       @access_token = response["accessJwt"]
       @refresh_token = response["refreshJwt"]
       @did = response["did"]
+      @service_endpoint = "did:web:#{URI.parse(response["didDoc"]["service"][0]["serviceEndpoint"]).host}"
     end
 
     def refresh!
