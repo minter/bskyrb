@@ -129,20 +129,39 @@ module Bskyrb
           "description" => og_data[:description] || ""
         }
       }
-      embed_data["external"]["thumb"] = get_thumb_blob(og_data[:image], client) if og_data[:image]
+      embed_data["external"]["thumb"] = get_image_blob(og_data[:image], client) if og_data[:image]
       embed_data
     end
 
     def create_image_embed(embed_images, client)
       # Limited to a maximum of 4 images
       images = []
+      embed_images = [embed_images] if embed_images.is_a?(String)
       embed_images[0..3].each do |image|
-        data = if image.is_a?(Hash)
-          get_thumb_blob(image["url"], client)
+        # Get blob data for the image
+        blob = if image.is_a?(Hash)
+          # If image has alt text, it will be in the format: { "url" => "...", "alt" => "..." }
+          alt_text = image["alt"] || ""
+          {
+            "alt" => alt_text,
+            "image" => get_image_blob(image["url"], client)
+          }
         else
-          get_thumb_blob(image, client)
+          # If just a string/file is passed, use empty alt text
+          {
+            "alt" => "",
+            "image" => get_image_blob(image, client)
+          }
         end
+        images << blob if blob["image"] # Only add if blob was successfully created
       end
+
+      return nil if images.empty?
+      # Return the properly formatted embed data
+      {
+        "$type" => "app.bsky.embed.images",
+        "images" => images
+      }
     end
 
     def create_video_embed(embed_video_file_path, client)
@@ -154,11 +173,15 @@ module Bskyrb
       }
     end
 
-    def get_thumb_blob(image, client)
+    def get_image_blob(image, client)
       case image
       when String
-        uri = Addressable::URI.parse(image).normalize
-        download_and_upload_image(uri, client)
+        if image.start_with?("http://", "https://")
+          uri = Addressable::URI.parse(image).normalize
+          download_and_upload_image(uri, client)
+        else
+          upload_image(File.open(image), client)
+        end
       when File, Tempfile
         upload_image(image, client)
       else
