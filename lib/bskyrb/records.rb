@@ -56,7 +56,7 @@ module Bskyrb
     def upload_blob(blob_path, content_type)
       if content_type.include?("image")
         # only images
-        max_size = 950 * 1024  # 950KB in bytes
+        max_size = 900 * 1024  # 900KB in bytes
         file_size = File.size(blob_path)
 
         if file_size > max_size
