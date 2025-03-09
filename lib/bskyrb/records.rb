@@ -56,7 +56,8 @@ module Bskyrb
     def upload_blob(blob_path, content_type)
       if content_type.include?("image")
         # only images
-        max_size = 900 * 1024  # 900KB in bytes
+        # https://github.com/bluesky-social/atproto/blob/72a5265e05d8eec4f10acdae8f6dfee409ea820a/lexicons/app/bsky/embed/images.json#L24
+        max_size = 999 * 1024  # 999KB in bytes
         file_size = File.size(blob_path)
 
         if file_size > max_size

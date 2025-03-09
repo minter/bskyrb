@@ -89,7 +89,7 @@ bsky.create_reply(post_uri, "Great post!", embed_images: ["path/to/image.jpg"])
 
 Images are automatically optimized:
 - Large images are automatically resized and compressed
-- Maximum size is enforced (900KB)
+- Maximum size is enforced (999KB)
 - Image quality is preserved while reducing file size
 - Supports both local files and remote URLs
 
