@@ -16,6 +16,7 @@ module Bskyrb
     def initialize(session)
       @session = session
       @pds = session.credentials.pds
+      @img_compression = ENV.fetch("BSKYRB_IMG_COMPRESSION", "100")
     end
 
     def create_record(input)
@@ -73,7 +74,7 @@ module Bskyrb
           image.resize "#{new_width}x#{new_height}"
 
           # Optionally, you can also compress the image
-          image.quality "85"  # Adjust quality as needed (0-100)
+          image.quality @img_compression  # Adjust quality as needed (0-100)
 
           # Save the modified image to a temporary file
           temp_file = "#{blob_path}.tmp"
