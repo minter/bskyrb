@@ -138,7 +138,7 @@ module Bskyrb
       end
     end
 
-    def create_post_or_reply(text, reply_to: nil, embed_url: nil, embed_images: [], embed_video: nil)
+    def create_post_or_reply(text, reply_to: nil, embed_url: nil, embed_images: [], embed_video: nil, created_at: DateTime.now.iso8601(3))
       facets = create_facets(text) || []  # Ensure facets is always an array
 
       input = {
@@ -146,7 +146,7 @@ module Bskyrb
         "repo" => session.did,
         "record" => {
           "$type" => "app.bsky.feed.post",
-          "createdAt" => DateTime.now.iso8601(3),
+          "createdAt" => created_at,
           "text" => text,
           "facets" => facets
         }
@@ -184,17 +184,17 @@ module Bskyrb
       get_post_by_url(root_uri)
     end
 
-    def create_post(text, embed_url: nil, embed_images: [], embed_video: nil)
-      create_post_or_reply(text, embed_url: embed_url, embed_images: embed_images, embed_video: embed_video)
+    def create_post(text, embed_url: nil, embed_images: [], embed_video: nil, created_at: DateTime.now.iso8601(3))
+      create_post_or_reply(text, embed_url: embed_url, embed_images: embed_images, embed_video: embed_video, created_at: created_at)
     end
 
-    def create_reply(replylink, text, embed_url: nil, embed_images: [], embed_video: nil)
+    def create_reply(replylink, text, embed_url: nil, embed_images: [], embed_video: nil, created_at: DateTime.now.iso8601(3))
       reply_to = get_post_by_url(replylink)
       if reply_to.nil?
         raise "Failed to fetch the post to reply to"
       end
 
-      create_post_or_reply(text, reply_to: reply_to, embed_url: embed_url, embed_images: embed_images, embed_video: embed_video)
+      create_post_or_reply(text, reply_to: reply_to, embed_url: embed_url, embed_images: embed_images, embed_video: embed_video, created_at: created_at)
     end
 
     def get_profile(username)
