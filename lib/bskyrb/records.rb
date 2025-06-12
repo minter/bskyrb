@@ -141,6 +141,9 @@ module Bskyrb
     def create_post_or_reply(text, reply_to: nil, embed_url: nil, embed_images: [], embed_video: nil, created_at: DateTime.now.iso8601(3))
       facets = create_facets(text) || []  # Ensure facets is always an array
 
+      # Debug the facets being used
+      puts "Using facets: #{facets.inspect}"
+
       input = {
         "collection" => "app.bsky.feed.post",
         "repo" => session.did,
@@ -151,6 +154,11 @@ module Bskyrb
           "facets" => facets
         }
       }
+
+      # Remove empty facets array to avoid API validation errors
+      if input["record"]["facets"].empty?
+        input["record"].delete("facets")
+      end
 
       if reply_to
         root = find_root_post(reply_to)

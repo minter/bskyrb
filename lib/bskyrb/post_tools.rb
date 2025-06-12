@@ -26,12 +26,13 @@ module Bskyrb
       # Regex patterns
       mention_pattern = /(^|\s|\()(@)([a-zA-Z0-9.-]+)(\b)/
       link_pattern = URI::DEFAULT_PARSER.make_regexp(%w[http https])
-      hashtag_pattern = /(?<![\w#])(#)(?!\d+\b)([a-zA-Z0-9_]+)(?!\w)/
+      hashtag_pattern = /(?<![\w#])(#)([a-zA-Z0-9_]+)(?!\w)/  # Simplified hashtag pattern
 
       # Find mentions
       text.enum_for(:scan, mention_pattern).each do |m|
-        index_start = text[0...Regexp.last_match.begin(0)].bytesize
-        index_end = text[0...Regexp.last_match.end(0)].bytesize
+        match_data = Regexp.last_match
+        index_start = text[0...match_data.begin(0)].bytesize
+        index_end = text[0...match_data.end(0)].bytesize
         did = resolve_handle(@pds, m.join("").strip[1..-1])["did"]
         unless did.nil?
           facets.push(
@@ -50,15 +51,24 @@ module Bskyrb
         end
       end
 
-      # Find links
-      text.scan(link_pattern) do |match|
-        next if match.nil? || match.empty?
-        full_match = match.join
-        index_start = text.index(full_match).to_s.bytesize
-        index_end = (index_start + full_match.bytesize)
+      # Find links - with improved validation
+      text.enum_for(:scan, link_pattern).each do |match|
+        match_data = Regexp.last_match
+        full_match = match_data[0]
+        next if full_match.nil? || full_match.empty?
+        
+        # Only process absolute URLs (starting with http:// or https://)
+        next unless full_match.start_with?('http://', 'https://')
+        
+        index_start = text[0...match_data.begin(0)].bytesize
+        index_end = text[0...match_data.end(0)].bytesize
 
         begin
           uri = URI.parse(full_match)
+          # Additional validation to ensure it's a proper URI
+          next unless uri.is_a?(URI::HTTP) || uri.is_a?(URI::HTTPS)
+          next if uri.host.nil? || uri.host.empty?
+          
           normalized_uri = uri.normalize.to_s
           facets.push(
             "$type" => "app.bsky.richtext.facet",
@@ -78,11 +88,16 @@ module Bskyrb
         end
       end
 
-      # Find hashtags
-      text.enum_for(:scan, hashtag_pattern).each do |m|
-        index_start = text[0...Regexp.last_match.begin(0)].bytesize
-        index_end = text[0...Regexp.last_match.end(0)].bytesize
-        tag = m[1] # The hashtag content is now in the second capture group
+      # Find hashtags with improved handling
+      text.enum_for(:scan, hashtag_pattern).each do |match|
+        match_data = Regexp.last_match
+        
+        index_start = text[0...match_data.begin(0)].bytesize
+        index_end = text[0...match_data.end(0)].bytesize
+        
+        # Extract just the tag part (without the # symbol)
+        tag_text = match_data[2]
+        
         facets.push(
           "$type" => "app.bsky.richtext.facet",
           "index" => {
@@ -91,14 +106,37 @@ module Bskyrb
           },
           "features" => [
             {
-              "tag" => tag.gsub(/^#/, ""), # Remove the leading '#' from the hashtag
+              "tag" => tag_text,
               "$type" => "app.bsky.richtext.facet#tag"
             }
           ]
         )
       end
 
-      facets  # Always return the array, even if it's empty
+      # Validate all facets before returning
+      valid_facets = facets.select do |facet|
+        next false unless facet["features"].is_a?(Array) && !facet["features"].empty?
+        
+        # Validate each feature in the facet
+        facet["features"].all? do |feature|
+          case feature["$type"]
+          when "app.bsky.richtext.facet#mention"
+            feature["did"].is_a?(String) && !feature["did"].empty?
+          when "app.bsky.richtext.facet#link"
+            feature["uri"].is_a?(String) && !feature["uri"].empty? && 
+              (feature["uri"].start_with?("http://") || feature["uri"].start_with?("https://"))
+          when "app.bsky.richtext.facet#tag"
+            feature["tag"].is_a?(String) && !feature["tag"].empty?
+          else
+            false # Unknown feature type
+          end
+        end
+      end
+
+      # Debug output
+      puts "Generated facets: #{valid_facets.inspect}"
+      
+      valid_facets  # Return only valid facets
     end
 
     def create_external_embed(embed_url, client)
