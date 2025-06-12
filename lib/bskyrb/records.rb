@@ -141,9 +141,6 @@ module Bskyrb
     def create_post_or_reply(text, reply_to: nil, embed_url: nil, embed_images: [], embed_video: nil, created_at: DateTime.now.iso8601(3))
       facets = create_facets(text) || []  # Ensure facets is always an array
 
-      # Debug the facets being used
-      puts "Using facets: #{facets.inspect}"
-
       input = {
         "collection" => "app.bsky.feed.post",
         "repo" => session.did,
@@ -181,8 +178,6 @@ module Bskyrb
       elsif embed_video
         input["record"]["embed"] = create_video_embed(embed_video, self)
       end
-
-      puts "Creating record: #{input.inspect}"
 
       create_record(input)
     end

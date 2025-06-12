@@ -133,9 +133,6 @@ module Bskyrb
         end
       end
 
-      # Debug output
-      puts "Generated facets: #{valid_facets.inspect}"
-      
       valid_facets  # Return only valid facets
     end
 
