@@ -182,6 +182,8 @@ module Bskyrb
         input["record"]["embed"] = create_video_embed(embed_video, self)
       end
 
+      puts "Creating record: #{input.inspect}"
+
       create_record(input)
     end
 
