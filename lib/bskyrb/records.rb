@@ -138,7 +138,7 @@ module Bskyrb
       end
     end
 
-    def create_post_or_reply(text, reply_to: nil, embed_url: nil, embed_images: [], embed_video: nil, created_at: DateTime.now.iso8601(3))
+    def create_post_or_reply(text, reply_to: nil, embed_url: nil, embed_images: [], embed_video: nil, created_at: DateTime.now.iso8601(3), langs: ["en-US"])
       facets = create_facets(text) || []  # Ensure facets is always an array
 
       input = {
@@ -148,7 +148,8 @@ module Bskyrb
           "$type" => "app.bsky.feed.post",
           "createdAt" => created_at,
           "text" => text,
-          "facets" => facets
+          "facets" => facets,
+          "langs" => langs
         }
       }
 
@@ -189,17 +190,17 @@ module Bskyrb
       get_post_by_url(root_uri)
     end
 
-    def create_post(text, embed_url: nil, embed_images: [], embed_video: nil, created_at: DateTime.now.iso8601(3))
-      create_post_or_reply(text, embed_url: embed_url, embed_images: embed_images, embed_video: embed_video, created_at: created_at)
+    def create_post(text, embed_url: nil, embed_images: [], embed_video: nil, created_at: DateTime.now.iso8601(3), langs: ["en-US"])
+      create_post_or_reply(text, embed_url: embed_url, embed_images: embed_images, embed_video: embed_video, created_at: created_at, langs: langs)
     end
 
-    def create_reply(replylink, text, embed_url: nil, embed_images: [], embed_video: nil, created_at: DateTime.now.iso8601(3))
+    def create_reply(replylink, text, embed_url: nil, embed_images: [], embed_video: nil, created_at: DateTime.now.iso8601(3), langs: ["en-US"])
       reply_to = get_post_by_url(replylink)
       if reply_to.nil?
         raise "Failed to fetch the post to reply to"
       end
 
-      create_post_or_reply(text, reply_to: reply_to, embed_url: embed_url, embed_images: embed_images, embed_video: embed_video, created_at: created_at)
+      create_post_or_reply(text, reply_to: reply_to, embed_url: embed_url, embed_images: embed_images, embed_video: embed_video, created_at: created_at, langs: langs)
     end
 
     def get_profile(username)
