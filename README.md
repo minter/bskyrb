@@ -62,6 +62,39 @@ post_uri = bsky.create_post("Hello world from bskyrb!")["uri"]
 bsky.like(post_uri)
 bsky.repost(post_uri)
 bsky.create_reply(post_uri, "Replying to post from bskyrb")
+
+# Delete a post by URL
+bsky.delete_post("https://bsky.app/profile/username.bsky.social/post/postid")
+
+# Or by PostView object
+post = bsky.get_post_by_url("https://bsky.app/profile/username.bsky.social/post/postid")
+bsky.delete_post(post)
+```
+
+#### Optional Parameters for Posts/Replies
+
+You can specify additional options when creating posts or replies:
+
+- `created_at`: Set a custom creation time (ISO8601 string).
+- `langs`: Specify language(s) for the post (e.g., `["en-US"]`).
+
+Example:
+
+```ruby
+bsky.create_post("Bonjour!", langs: ["fr"], created_at: "2024-06-01T12:00:00Z")
+```
+
+#### Error Handling
+
+API methods may raise exceptions or return `nil` if a request fails. You may want to handle errors in your code:
+
+```ruby
+begin
+  post = bsky.get_post_by_url("https://bsky.app/profile/username.bsky.social/post/postid")
+  raise "Post not found" if post.nil?
+rescue => e
+  puts "Error: #{e.message}"
+end
 ```
 
 ### Media Handling
