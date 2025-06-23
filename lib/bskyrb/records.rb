@@ -291,21 +291,40 @@ module Bskyrb
     end
 
     def get_latest_n_posts(username, n)
-      endpoint = XRPC::EasyEndpoint.new(session.pds, "app.bsky.feed.getAuthorFeed", authenticated: true)
-      endpoint.authenticate(session.access_token)
-      hydrate_feed endpoint.get(actor: username, limit: n), Bskyrb::AppBskyFeedGetauthorfeed::GetAuthorFeed::Output
+      # Build the endpoint URL
+      url = "#{session.pds}/xrpc/app.bsky.feed.getAuthorFeed?actor=#{username}&limit=#{n}"
+      res = HTTParty.get(url, headers: default_authenticated_headers(session))
+      if res.success?
+        hydrate_feed(res, Bskyrb::AppBskyFeedGetauthorfeed::GetAuthorFeed::Output)
+      else
+        raise "API request failed: #{res.code} - #{res.message}"
+      end
+    rescue => e
+      nil
     end
 
     def get_skyline(n)
-      endpoint = XRPC::EasyEndpoint.new(session.pds, "app.bsky.feed.getTimeline", authenticated: true)
-      endpoint.authenticate(session.access_token)
-      hydrate_feed endpoint.get(limit: n), Bskyrb::AppBskyFeedGettimeline::GetTimeline::Output
+      url = "#{session.pds}/xrpc/app.bsky.feed.getTimeline?limit=#{n}"
+      res = HTTParty.get(url, headers: default_authenticated_headers(session))
+      if res.success?
+        hydrate_feed(res, Bskyrb::AppBskyFeedGettimeline::GetTimeline::Output)
+      else
+        raise "API request failed: #{res.code} - #{res.message}"
+      end
+    rescue => e
+      nil
     end
 
     def get_popular(n)
-      endpoint = XRPC::EasyEndpoint.new session.pds, "app.bsky.unspecced.getPopular", authenticated: true
-      endpoint.authenticate session.access_token
-      hydrate_feed endpoint.get(limit: n), Bskyrb::AppBskyUnspeccedGetpopular::GetPopular::Output
+      url = "#{session.pds}/xrpc/app.bsky.unspecced.getPopular?limit=#{n}"
+      res = HTTParty.get(url, headers: default_authenticated_headers(session))
+      if res.success?
+        hydrate_feed(res, Bskyrb::AppBskyUnspeccedGetpopular::GetPopular::Output)
+      else
+        raise "API request failed: #{res.code} - #{res.message}"
+      end
+    rescue => e
+      nil
     end
 
     def hydrate_feed(response_hash, klass)
@@ -317,6 +336,39 @@ module Bskyrb
           end
         end
       end
+    end
+
+    # Deletes a post by URL or PostView object
+    def delete_post(post_or_url)
+      post = post_or_url.is_a?(String) ? get_post_by_url(post_or_url) : post_or_url
+      raise ArgumentError, "Could not resolve post" unless post && post.uri
+
+      # Parse AT URI: at://did/collection/rkey
+      at_uri = post.uri
+      uri_parts = at_uri.split("/")
+      raise ArgumentError, "Invalid post URI: #{at_uri}" unless uri_parts.length == 5
+      repo = uri_parts[2]
+      collection = uri_parts[3]
+      rkey = uri_parts[4]
+
+      input = {
+        "repo" => repo,
+        "collection" => collection,
+        "rkey" => rkey
+      }
+
+      res = HTTParty.post(
+        delete_record_uri(session.pds),
+        body: input.to_json,
+        headers: default_authenticated_headers(session)
+      )
+      if res.success?
+        res
+      else
+        raise "API request failed: #{res.code} - #{res.message}"
+      end
+    rescue => e
+      nil
     end
   end
 end
