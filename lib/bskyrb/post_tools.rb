@@ -26,7 +26,7 @@ module Bskyrb
       # Regex patterns
       mention_pattern = /(^|\s|\()(@)([a-zA-Z0-9.-]+)(\b)/
       link_pattern = URI::DEFAULT_PARSER.make_regexp(%w[http https])
-      hashtag_pattern = /(?<![\w#])(#)([a-zA-Z0-9_]+)(?!\w)/  # Simplified hashtag pattern
+      hashtag_pattern = /(?<![\w#])(#)((?=[a-zA-Z0-9_]*[a-zA-Z][a-zA-Z0-9_]*)[a-zA-Z0-9_]+)(?!\w)/  # Hashtag pattern requiring at least one letter
 
       # Find mentions
       text.enum_for(:scan, mention_pattern).each do |m|
