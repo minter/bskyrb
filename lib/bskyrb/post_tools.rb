@@ -252,6 +252,7 @@ module Bskyrb
       content_type = MiniMime.lookup_by_filename(file.path)&.content_type || "application/octet-stream"
       begin
         upload_response = client.upload_blob(file.path, content_type)
+        return nil unless upload_response&.dig("blob")
         {
           "$type" => "blob",
           "ref" => upload_response["blob"]["ref"],

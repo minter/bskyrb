@@ -90,11 +90,23 @@ module Bskyrb
         image_bytes = File.binread(blob_path)
       end
 
-      HTTParty.post(
-        upload_blob_uri(session.pds),
-        body: image_bytes,
-        headers: default_authenticated_headers(session).merge("Content-Type" => content_type)
-      )
+      begin
+        response = HTTParty.post(
+          upload_blob_uri(session.pds),
+          body: image_bytes,
+          headers: default_authenticated_headers(session).merge("Content-Type" => content_type)
+        )
+        
+        if response.success?
+          response
+        else
+          puts "Error uploading blob: #{response.code} - #{response.message}"
+          nil
+        end
+      rescue => e
+        puts "Error uploading blob: #{e.message}"
+        nil
+      end
     end
 
     def upload_video_blob(file_path, content_type)
