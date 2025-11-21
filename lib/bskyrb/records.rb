@@ -10,9 +10,9 @@ module Bskyrb
 
     attr_reader :session
 
-    # First, let's add these constants at the top of the file
-    JOB_STATE_COMPLETED = "completed"
-    JOB_STATE_FAILED = "failed"
+    # Job state constants for video processing
+    JOB_STATE_COMPLETED = "JOB_STATE_COMPLETED"
+    JOB_STATE_FAILED = "JOB_STATE_FAILED"
 
     def initialize(session)
       @session = session
@@ -111,22 +111,53 @@ module Bskyrb
     end
 
     def upload_video_blob(file_path, content_type)
+      # Check video file size (50MB limit as reasonable default)
+      max_video_size = 50 * 1024 * 1024  # 50MB in bytes
+      file_size = File.size(file_path)
+      
+      if file_size > max_video_size
+        raise "Video file too large: #{file_size} bytes (#{(file_size / 1024.0 / 1024.0).round(2)}MB). Maximum allowed: #{max_video_size / 1024 / 1024}MB"
+      end
+      
+      puts "Uploading video: #{File.basename(file_path)} (#{(file_size / 1024.0 / 1024.0).round(2)}MB)"
+      
+      # Get service authentication token
+      puts "Getting service auth for video upload..."
+      puts "Session PDS: #{session.pds}"
+      puts "Session DID: #{session.did}"
+      puts "Service endpoint: #{session.service_endpoint}"
+      
       service_auth_response = HTTParty.get(
         get_service_auth_uri(session.pds, session.service_endpoint, "com.atproto.repo.uploadBlob", (Time.now.to_i + 3600).to_s),
         headers: default_authenticated_headers(session)
       )
+      
+      unless service_auth_response&.success? && service_auth_response["token"]
+        puts "Service auth response: #{service_auth_response.inspect}"
+        raise "Failed to get service auth token: #{service_auth_response&.code} - #{service_auth_response&.message}"
+      end
+      
+      puts "Service auth successful, got token"
 
+      # Upload video and get job ID
       video_bytes = File.binread(file_path)
       response = HTTParty.post(
         upload_video_uri("https://video.bsky.app", session.did, File.basename(file_path)),
         body: video_bytes,
         headers: {"Authorization" => "Bearer #{service_auth_response["token"]}", "Content-Type" => content_type, "Content-Length" => video_bytes.size.to_s}
       )
+      
+      unless response&.success? && response["jobId"]
+        raise "Failed to upload video: #{response&.code} - #{response&.message}"
+      end
+      
       job_id = response["jobId"]
+      puts "Video upload started with job ID: #{job_id}"
 
+      # Poll for job completion
       start_time = Time.now
       timeout = 300  # 5 minutes timeout
-      job_status_response = nil  # Declare the variable before the loop
+      job_status_response = nil
 
       loop do
         job_status_response = HTTParty.get(
@@ -134,8 +165,18 @@ module Bskyrb
           headers: {"Authorization" => "Bearer #{service_auth_response["token"]}"}
         )
 
+        unless job_status_response&.success?
+          raise "Failed to get job status: #{job_status_response&.code} - #{job_status_response&.message}"
+        end
+        
+        unless job_status_response["jobStatus"]
+          raise "Invalid job status response format: #{job_status_response.inspect}"
+        end
+
         state = job_status_response["jobStatus"]["state"]
-        break if ["JOB_STATE_COMPLETED", "JOB_STATE_FAILED"].include?(state)
+        puts "Video processing status: #{state}"
+        
+        break if [JOB_STATE_COMPLETED, JOB_STATE_FAILED].include?(state)
 
         if Time.now - start_time > timeout
           raise "Video processing timed out after #{timeout} seconds"
@@ -144,11 +185,15 @@ module Bskyrb
         sleep(5)
       end
 
-      if job_status_response["jobStatus"]["state"] == "JOB_STATE_COMPLETED"
+      if job_status_response["jobStatus"]["state"] == JOB_STATE_COMPLETED
+        puts "Video processing completed successfully"
         job_status_response["jobStatus"]["blob"]
       else
         raise "Video processing failed: #{job_status_response["jobStatus"]["state"]}"
       end
+    rescue => e
+      puts "Error in upload_video_blob: #{e.message}"
+      raise e
     end
 
     def create_post_or_reply(text, reply_to: nil, embed_url: nil, embed_images: [], embed_video: nil, created_at: DateTime.now.iso8601(3), langs: ["en-US"], facets: [])
