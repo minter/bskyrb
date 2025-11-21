@@ -253,13 +253,8 @@ module Bskyrb
         ]
       }
     end
-    end
 
     private
-
-    # Extract the original automatic facet detection logic
-    def find_automatic_facets(text)
-      facets = []
 
     def create_external_embed(embed_url, client)
       response = HTTParty.get(embed_url)
