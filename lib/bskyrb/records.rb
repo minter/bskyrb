@@ -121,14 +121,18 @@ module Bskyrb
       
       puts "Uploading video: #{File.basename(file_path)} (#{(file_size / 1024.0 / 1024.0).round(2)}MB)"
       
-      # Get service authentication token
+      # Get service authentication token for video service
       puts "Getting service auth for video upload..."
       puts "Session PDS: #{session.pds}"
       puts "Session DID: #{session.did}"
       puts "Service endpoint: #{session.service_endpoint}"
       
+      video_service_url = "https://video.bsky.app"
+      auth_uri = get_service_auth_uri(session.pds, video_service_url, "app.bsky.video.uploadVideo", (Time.now.to_i + 3600).to_s)
+      puts "Requesting service auth from: #{auth_uri}"
+      
       service_auth_response = HTTParty.get(
-        get_service_auth_uri(session.pds, session.service_endpoint, "com.atproto.repo.uploadBlob", (Time.now.to_i + 3600).to_s),
+        auth_uri,
         headers: default_authenticated_headers(session)
       )
       
@@ -137,17 +141,24 @@ module Bskyrb
         raise "Failed to get service auth token: #{service_auth_response&.code} - #{service_auth_response&.message}"
       end
       
-      puts "Service auth successful, got token"
+      video_token = service_auth_response["token"]
+      puts "Service auth successful, got token: #{video_token[0..20]}..." # Log first 20 chars for debugging
 
       # Upload video and get job ID
       video_bytes = File.binread(file_path)
+      upload_url = upload_video_uri(video_service_url, session.did, File.basename(file_path))
+      puts "Uploading to URL: #{upload_url}"
+      puts "Video size: #{video_bytes.size} bytes"
+      
       response = HTTParty.post(
-        upload_video_uri("https://video.bsky.app", session.did, File.basename(file_path)),
+        upload_url,
         body: video_bytes,
-        headers: {"Authorization" => "Bearer #{service_auth_response["token"]}", "Content-Type" => content_type, "Content-Length" => video_bytes.size.to_s}
+        headers: {"Authorization" => "Bearer #{video_token}", "Content-Type" => content_type, "Content-Length" => video_bytes.size.to_s}
       )
       
       unless response&.success? && response["jobId"]
+        puts "Video upload response: #{response.inspect}"
+        puts "Response body: #{response.body}" if response
         raise "Failed to upload video: #{response&.code} - #{response&.message}"
       end
       
@@ -161,8 +172,8 @@ module Bskyrb
 
       loop do
         job_status_response = HTTParty.get(
-          get_video_job_status_uri("https://video.bsky.app", job_id),
-          headers: {"Authorization" => "Bearer #{service_auth_response["token"]}"}
+          get_video_job_status_uri(video_service_url, job_id),
+          headers: {"Authorization" => "Bearer #{video_token}"}
         )
 
         unless job_status_response&.success?
