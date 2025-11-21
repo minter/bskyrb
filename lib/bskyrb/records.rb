@@ -7,6 +7,7 @@ module Bskyrb
   class Client
     include ATProto::RequestUtils
     include PostTools
+
     attr_reader :session
 
     # First, let's add these constants at the top of the file
@@ -50,7 +51,7 @@ module Bskyrb
       else
         raise "API request failed: #{res.code} - #{res.message}"
       end
-    rescue => e
+    rescue
       nil
     end
 
@@ -96,7 +97,7 @@ module Bskyrb
           body: image_bytes,
           headers: default_authenticated_headers(session).merge("Content-Type" => content_type)
         )
-        
+
         if response.success?
           response
         else
@@ -312,7 +313,7 @@ module Bskyrb
       else
         raise "API request failed: #{res.code} - #{res.message}"
       end
-    rescue => e
+    rescue
       nil
     end
 
@@ -324,7 +325,7 @@ module Bskyrb
       else
         raise "API request failed: #{res.code} - #{res.message}"
       end
-    rescue => e
+    rescue
       nil
     end
 
@@ -336,7 +337,7 @@ module Bskyrb
       else
         raise "API request failed: #{res.code} - #{res.message}"
       end
-    rescue => e
+    rescue
       nil
     end
 
@@ -380,7 +381,7 @@ module Bskyrb
       else
         raise "API request failed: #{res.code} - #{res.message}"
       end
-    rescue => e
+    rescue
       nil
     end
   end

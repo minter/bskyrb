@@ -16,7 +16,7 @@ EM.run {
   ws.on :message do |event|
     msg_bytes = event.data
     unpacker = CBOR::Unpacker.new(StringIO.new(msg_bytes.pack("C*")))
-    header, payload = unpacker.each.to_a
+    _, payload = unpacker.each.to_a
 
     # decoder = CBOR::Decoding.new(StringIO.new(msg_bytes.pack('C*')))
     # while item = decoder.read

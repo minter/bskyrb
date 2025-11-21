@@ -39,15 +39,15 @@ module Bskyrb
     def create_facets(text, manual_facets: [])
       # Start with manual facets (they take priority)
       facets = manual_facets.dup
-      
+
       # Add automatic facets that don't conflict with manual ones
       automatic_facets = find_automatic_facets(text)
       non_conflicting_auto_facets = automatic_facets.reject do |auto_facet|
         has_conflict?(auto_facet, facets)
       end
-      
+
       facets.concat(non_conflicting_auto_facets)
-      
+
       # Sort by byte position and validate
       facets.sort_by! { |f| f["index"]["byteStart"] }
       validate_facets(facets)
@@ -86,14 +86,14 @@ module Bskyrb
       end
 
       # Find links - with improved validation
-      text.enum_for(:scan, link_pattern).each do |match|
+      text.scan(link_pattern) do
         match_data = Regexp.last_match
         full_match = match_data[0]
         next if full_match.nil? || full_match.empty?
-        
+
         # Only process absolute URLs (starting with http:// or https://)
-        next unless full_match.start_with?('http://', 'https://')
-        
+        next unless full_match.start_with?("http://", "https://")
+
         index_start = text[0...match_data.begin(0)].bytesize
         index_end = text[0...match_data.end(0)].bytesize
 
@@ -102,7 +102,7 @@ module Bskyrb
           # Additional validation to ensure it's a proper URI
           next unless uri.is_a?(URI::HTTP) || uri.is_a?(URI::HTTPS)
           next if uri.host.nil? || uri.host.empty?
-          
+
           normalized_uri = uri.normalize.to_s
           facets.push(
             "$type" => "app.bsky.richtext.facet",
@@ -123,15 +123,15 @@ module Bskyrb
       end
 
       # Find hashtags with improved handling
-      text.enum_for(:scan, hashtag_pattern).each do |match|
+      text.scan(hashtag_pattern) do
         match_data = Regexp.last_match
-        
+
         index_start = text[0...match_data.begin(0)].bytesize
         index_end = text[0...match_data.end(0)].bytesize
-        
+
         # Extract just the tag part (without the # symbol)
         tag_text = match_data[2]
-        
+
         facets.push(
           "$type" => "app.bsky.richtext.facet",
           "index" => {
@@ -152,17 +152,17 @@ module Bskyrb
 
     # Validate facets structure and content
     def validate_facets(facets)
-      valid_facets = facets.select do |facet|
+      facets.select do |facet|
         next false unless facet["features"].is_a?(Array) && !facet["features"].empty?
-        
+
         # Validate each feature in the facet
         facet["features"].all? do |feature|
           case feature["$type"]
           when "app.bsky.richtext.facet#mention"
             feature["did"].is_a?(String) && !feature["did"].empty?
           when "app.bsky.richtext.facet#link"
-            feature["uri"].is_a?(String) && !feature["uri"].empty? && 
-              (feature["uri"].start_with?("http://") || feature["uri"].start_with?("https://"))
+            feature["uri"].is_a?(String) && !feature["uri"].empty? &&
+              feature["uri"].start_with?("http://", "https://")
           when "app.bsky.richtext.facet#tag"
             feature["tag"].is_a?(String) && !feature["tag"].empty?
           else
@@ -170,11 +170,7 @@ module Bskyrb
           end
         end
       end
-      
-      valid_facets
     end
-
-    public
 
     # Helper method to create a manual link facet
     def create_link_facet(text, link_text, url, start_pos = nil)
@@ -183,10 +179,10 @@ module Bskyrb
         start_pos = text.index(link_text)
         return nil if start_pos.nil?
       end
-      
+
       byte_start = text[0...start_pos].bytesize
       byte_end = text[0...(start_pos + link_text.length)].bytesize
-      
+
       {
         "$type" => "app.bsky.richtext.facet",
         "index" => {
@@ -209,10 +205,10 @@ module Bskyrb
         start_pos = text.index(hashtag_text)
         return nil if start_pos.nil?
       end
-      
+
       byte_start = text[0...start_pos].bytesize
       byte_end = text[0...(start_pos + hashtag_text.length)].bytesize
-      
+
       {
         "$type" => "app.bsky.richtext.facet",
         "index" => {
@@ -235,10 +231,10 @@ module Bskyrb
         start_pos = text.index(mention_text)
         return nil if start_pos.nil?
       end
-      
+
       byte_start = text[0...start_pos].bytesize
       byte_end = text[0...(start_pos + mention_text.length)].bytesize
-      
+
       {
         "$type" => "app.bsky.richtext.facet",
         "index" => {
@@ -405,6 +401,7 @@ module Bskyrb
   class PostRecord
     include ATProto::RequestUtils
     include PostTools
+
     attr_accessor :text, :timestamp, :facets, :embed, :pds
 
     def initialize(text, timestamp: DateTime.now.iso8601(3), pds: "https://bsky.social")

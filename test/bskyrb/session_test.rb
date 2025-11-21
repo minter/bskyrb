@@ -29,7 +29,7 @@ module Bskyrb
       credentials = ATProto::Credentials.new("invalid_username", "invalid_password", "https://bsky.social")
 
       assert_raises(ATProto::UnauthorizedError) do
-        session = ATProto::Session.new(credentials)
+        ATProto::Session.new(credentials)
       end
     end
   end

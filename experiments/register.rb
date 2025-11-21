@@ -8,7 +8,7 @@ B58BT = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 class Array
   def to_base58
     r = ""
-    n = BigDecimal("0")
+    n = BigDecimal(0)
     each do |byte|
       n = n * 256 + byte
     end
@@ -55,7 +55,7 @@ body = {
 }.to_json
 response = HTTParty.post("#{host}/xrpc/com.atproto.server.createAccount", headers: headers, body: body)
 jres = JSON.parse(response.body)
-if (error = jres["error"])
+if jres["error"]
   puts "Couldn't create the account, because… #{jres["error"]}: #{jres["message"] || "???"}"
   puts "The key has not been removed, in case account creation was somehow successful - but that's unlikely :("
 else
