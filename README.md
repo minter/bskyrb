@@ -141,6 +141,60 @@ bsky.create_post("Check out https://example.com")
 bsky.create_post("Just posting about #ruby and #coding!")
 ```
 
+#### Manual Facets
+
+You can manually specify facets to override automatic detection or create custom link behavior. This is particularly useful for shortening long URLs while preserving their functionality:
+
+```ruby
+# Create a manual facet for custom link behavior
+text = "🎟️ ticketmaster.com"
+long_url = "https://www.ticketmaster.com/event/2D0062F0B9159486?brand=carolinahurricanes&artistid=805908&wt.mc_id=NHL_TEAM_CAR_SCHEDULE_GM9&utm_source=NHL.com&utm_medium=client&utm_campaign=NHL_TEAM_CAR&utm_content=SCHEDULE_GM9"
+
+# Use helper method to create a link facet
+manual_facet = bsky.create_link_facet(text, "ticketmaster.com", long_url)
+
+# Create post with manual facet
+bsky.create_post(text, facets: [manual_facet])
+# Result: "ticketmaster.com" displays but links to the full URL
+```
+
+**Helper Methods for Creating Facets:**
+
+```ruby
+# Link facets - make custom text clickable
+link_facet = bsky.create_link_facet(text, "click here", "https://example.com")
+
+# Hashtag facets - create custom hashtag behavior  
+hashtag_facet = bsky.create_hashtag_facet(text, "#custom", "customtag")
+
+# Mention facets - create custom mention behavior
+mention_facet = bsky.create_mention_facet(text, "@custom", "did:plc:user123")
+```
+
+**Manual Facets with Automatic Detection:**
+
+Manual facets work seamlessly with automatic detection:
+
+```ruby
+text = "Visit ticketmaster.com and check out https://example.com #music"
+
+# Create manual facet for ticketmaster.com (links to long URL)
+manual_facet = bsky.create_link_facet(text, "ticketmaster.com", long_ticketmaster_url)
+
+# Automatic detection will still find:
+# - https://example.com (as a link)  
+# - #music (as a hashtag)
+# Manual facet takes priority over automatic detection if there are conflicts
+
+bsky.create_post(text, facets: [manual_facet])
+```
+
+**Conflict Resolution:**
+
+- **Manual facets take priority** over automatic detection when there are overlapping byte ranges
+- **Non-conflicting facets coexist** - both manual and automatic facets work together
+- **Byte positions are automatically calculated** and validated to prevent rendering issues
+
 ### User Operations
 
 ```ruby

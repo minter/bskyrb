@@ -20,7 +20,41 @@ require "addressable/uri"
 
 module Bskyrb
   module PostTools
-    def create_facets(text)
+    # Check if two facets have overlapping byte ranges
+    def facets_overlap?(facet1, facet2)
+      start1 = facet1["index"]["byteStart"]
+      end1 = facet1["index"]["byteEnd"]
+      start2 = facet2["index"]["byteStart"]
+      end2 = facet2["index"]["byteEnd"]
+
+      # Check if ranges overlap
+      start1 < end2 && start2 < end1
+    end
+
+    # Check if a facet conflicts with any in a list of facets
+    def has_conflict?(facet, facet_list)
+      facet_list.any? { |existing_facet| facets_overlap?(facet, existing_facet) }
+    end
+
+    def create_facets(text, manual_facets: [])
+      # Start with manual facets (they take priority)
+      facets = manual_facets.dup
+      
+      # Add automatic facets that don't conflict with manual ones
+      automatic_facets = find_automatic_facets(text)
+      non_conflicting_auto_facets = automatic_facets.reject do |auto_facet|
+        has_conflict?(auto_facet, facets)
+      end
+      
+      facets.concat(non_conflicting_auto_facets)
+      
+      # Sort by byte position and validate
+      facets.sort_by! { |f| f["index"]["byteStart"] }
+      validate_facets(facets)
+    end
+
+    # Extract the original automatic facet detection logic
+    def find_automatic_facets(text)
       facets = []
 
       # Regex patterns
@@ -113,7 +147,11 @@ module Bskyrb
         )
       end
 
-      # Validate all facets before returning
+      facets
+    end
+
+    # Validate facets structure and content
+    def validate_facets(facets)
       valid_facets = facets.select do |facet|
         next false unless facet["features"].is_a?(Array) && !facet["features"].empty?
         
@@ -132,9 +170,96 @@ module Bskyrb
           end
         end
       end
-
-      valid_facets  # Return only valid facets
+      
+      valid_facets
     end
+
+    public
+
+    # Helper method to create a manual link facet
+    def create_link_facet(text, link_text, url, start_pos = nil)
+      if start_pos.nil?
+        # Auto-find the position of link_text in the full text
+        start_pos = text.index(link_text)
+        return nil if start_pos.nil?
+      end
+      
+      byte_start = text[0...start_pos].bytesize
+      byte_end = text[0...(start_pos + link_text.length)].bytesize
+      
+      {
+        "$type" => "app.bsky.richtext.facet",
+        "index" => {
+          "byteStart" => byte_start,
+          "byteEnd" => byte_end
+        },
+        "features" => [
+          {
+            "uri" => url,
+            "$type" => "app.bsky.richtext.facet#link"
+          }
+        ]
+      }
+    end
+
+    # Helper method to create a manual hashtag facet
+    def create_hashtag_facet(text, hashtag_text, tag, start_pos = nil)
+      if start_pos.nil?
+        # Auto-find the position of hashtag_text in the full text
+        start_pos = text.index(hashtag_text)
+        return nil if start_pos.nil?
+      end
+      
+      byte_start = text[0...start_pos].bytesize
+      byte_end = text[0...(start_pos + hashtag_text.length)].bytesize
+      
+      {
+        "$type" => "app.bsky.richtext.facet",
+        "index" => {
+          "byteStart" => byte_start,
+          "byteEnd" => byte_end
+        },
+        "features" => [
+          {
+            "tag" => tag,
+            "$type" => "app.bsky.richtext.facet#tag"
+          }
+        ]
+      }
+    end
+
+    # Helper method to create a manual mention facet
+    def create_mention_facet(text, mention_text, did, start_pos = nil)
+      if start_pos.nil?
+        # Auto-find the position of mention_text in the full text
+        start_pos = text.index(mention_text)
+        return nil if start_pos.nil?
+      end
+      
+      byte_start = text[0...start_pos].bytesize
+      byte_end = text[0...(start_pos + mention_text.length)].bytesize
+      
+      {
+        "$type" => "app.bsky.richtext.facet",
+        "index" => {
+          "byteStart" => byte_start,
+          "byteEnd" => byte_end
+        },
+        "features" => [
+          {
+            "did" => did,
+            "$type" => "app.bsky.richtext.facet#mention"
+          }
+        ]
+      }
+    end
+    end
+
+    private
+
+    # Extract the original automatic facet detection logic
+    def find_automatic_facets(text)
+      facets = []
 
     def create_external_embed(embed_url, client)
       response = HTTParty.get(embed_url)

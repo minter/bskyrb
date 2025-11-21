@@ -150,8 +150,9 @@ module Bskyrb
       end
     end
 
-    def create_post_or_reply(text, reply_to: nil, embed_url: nil, embed_images: [], embed_video: nil, created_at: DateTime.now.iso8601(3), langs: ["en-US"])
-      facets = create_facets(text) || []  # Ensure facets is always an array
+    def create_post_or_reply(text, reply_to: nil, embed_url: nil, embed_images: [], embed_video: nil, created_at: DateTime.now.iso8601(3), langs: ["en-US"], facets: [])
+      # Create facets from text, supplementing with any manual facets provided
+      all_facets = create_facets(text, manual_facets: facets) || []  # Ensure facets is always an array
 
       input = {
         "collection" => "app.bsky.feed.post",
@@ -160,7 +161,7 @@ module Bskyrb
           "$type" => "app.bsky.feed.post",
           "createdAt" => created_at,
           "text" => text,
-          "facets" => facets,
+          "facets" => all_facets,
           "langs" => langs
         }
       }
@@ -202,17 +203,17 @@ module Bskyrb
       get_post_by_url(root_uri)
     end
 
-    def create_post(text, embed_url: nil, embed_images: [], embed_video: nil, created_at: DateTime.now.iso8601(3), langs: ["en-US"])
-      create_post_or_reply(text, embed_url: embed_url, embed_images: embed_images, embed_video: embed_video, created_at: created_at, langs: langs)
+    def create_post(text, embed_url: nil, embed_images: [], embed_video: nil, created_at: DateTime.now.iso8601(3), langs: ["en-US"], facets: [])
+      create_post_or_reply(text, embed_url: embed_url, embed_images: embed_images, embed_video: embed_video, created_at: created_at, langs: langs, facets: facets)
     end
 
-    def create_reply(replylink, text, embed_url: nil, embed_images: [], embed_video: nil, created_at: DateTime.now.iso8601(3), langs: ["en-US"])
+    def create_reply(replylink, text, embed_url: nil, embed_images: [], embed_video: nil, created_at: DateTime.now.iso8601(3), langs: ["en-US"], facets: [])
       reply_to = get_post_by_url(replylink)
       if reply_to.nil?
         raise "Failed to fetch the post to reply to"
       end
 
-      create_post_or_reply(text, reply_to: reply_to, embed_url: embed_url, embed_images: embed_images, embed_video: embed_video, created_at: created_at, langs: langs)
+      create_post_or_reply(text, reply_to: reply_to, embed_url: embed_url, embed_images: embed_images, embed_video: embed_video, created_at: created_at, langs: langs, facets: facets)
     end
 
     def get_profile(username)
