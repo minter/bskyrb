@@ -5,6 +5,7 @@ require "nokogiri"
 require "tempfile"
 require "mini_mime"
 require "addressable/uri"
+require "mini_magick"
 # module Bskyrb
 #   include Atmosfire
 
@@ -291,19 +292,19 @@ module Bskyrb
       embed_images[0..3].each do |image|
         # Get blob data for the image
         blob = if image.is_a?(Hash)
-          # If image has alt text, it will be in the format: { "url" => "...", "alt" => "..." }
-          alt_text = image["alt"] || ""
-          {
-            "alt" => alt_text,
-            "image" => get_image_blob(image["url"], client)
-          }
-        else
-          # If just a string/file is passed, use empty alt text
-          {
-            "alt" => "",
-            "image" => get_image_blob(image, client)
-          }
-        end
+                 # If image has alt text, it will be in the format: { "url" => "...", "alt" => "..." }
+                 alt_text = image["alt"] || ""
+                 {
+                   "alt" => alt_text,
+                   "image" => get_image_blob(image["url"], client)
+                 }
+               else
+                 # If just a string/file is passed, use empty alt text
+                 {
+                   "alt" => "",
+                   "image" => get_image_blob(image, client)
+                 }
+               end
         images << blob if blob["image"] # Only add if blob was successfully created
       end
 
@@ -366,8 +367,19 @@ module Bskyrb
 
     def upload_image(file, client)
       content_type = MiniMime.lookup_by_filename(file.path)&.content_type || "application/octet-stream"
+      
+      # Check if file needs compression (Bluesky limit is ~976KB, we target 950KB for buffer)
+      max_size = 950 * 1024 # 950KB in bytes
+      file_path = file.path
+      
+      if File.size(file_path) > max_size
+        puts "Image size (#{File.size(file_path)} bytes) exceeds limit, compressing..."
+        compressed_file = compress_image(file_path, max_size)
+        file_path = compressed_file.path if compressed_file
+      end
+      
       begin
-        upload_response = client.upload_blob(file.path, content_type)
+        upload_response = client.upload_blob(file_path, content_type)
         return nil unless upload_response&.dig("blob")
         {
           "$type" => "blob",
@@ -377,6 +389,70 @@ module Bskyrb
         }
       rescue => e
         puts "Error uploading image: #{e.message}"
+        nil
+      ensure
+        # Clean up compressed temp file if we created one
+        if compressed_file && compressed_file != file
+          compressed_file.close
+          compressed_file.unlink
+        end
+      end
+    end
+
+    def compress_image(file_path, max_size)
+      begin
+        # Create a temporary file for the compressed image
+        temp_file = Tempfile.new(["compressed", File.extname(file_path)])
+        
+        # Use MiniMagick to compress the image
+        image = MiniMagick::Image.open(file_path)
+        
+        # Start with high quality and reduce if needed
+        quality = 85
+        
+        # Try different quality levels until we get under the size limit
+        loop do
+          image.format "jpeg" # Convert to JPEG for better compression
+          image.quality quality.to_s
+          image.write temp_file.path
+          
+          current_size = File.size(temp_file.path)
+          puts "Compressed image size: #{current_size} bytes (quality: #{quality})"
+          
+          # If we're under the limit or quality is too low, break
+          break if current_size <= max_size || quality <= 20
+          
+          # Reduce quality for next iteration
+          quality -= 15
+          
+          # Reset the image object to avoid cumulative effects
+          image = MiniMagick::Image.open(file_path)
+        end
+        
+        # If still too large, try resizing
+        if File.size(temp_file.path) > max_size
+          puts "Still too large after quality reduction, trying resize..."
+          image = MiniMagick::Image.open(file_path)
+          
+          # Resize to 80% of original dimensions and try again
+          original_width = image.width
+          original_height = image.height
+          new_width = (original_width * 0.8).to_i
+          new_height = (original_height * 0.8).to_i
+          
+          image.resize "#{new_width}x#{new_height}"
+          image.format "jpeg"
+          image.quality "75"
+          image.write temp_file.path
+          
+          puts "Resized image size: #{File.size(temp_file.path)} bytes"
+        end
+        
+        temp_file
+      rescue => e
+        puts "Error compressing image: #{e.message}"
+        temp_file&.close
+        temp_file&.unlink
         nil
       end
     end
