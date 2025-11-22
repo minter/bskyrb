@@ -127,9 +127,23 @@ module Bskyrb
       puts "Session DID: #{session.did}"
       puts "Service endpoint: #{session.service_endpoint}"
       
+      # Try to understand the service endpoint structure
+      if session.service_endpoint && session.service_endpoint.include?("host.bsky.network")
+        puts "Service endpoint appears to be a host-based DID"
+        # Extract the host part and see if we can derive video service info
+        host_parts = session.service_endpoint.split(".")
+        puts "Host parts: #{host_parts.inspect}"
+      end
+      
       video_service_url = "https://video.bsky.app"
-      auth_uri = get_service_auth_uri(session.pds, video_service_url, "app.bsky.video.uploadVideo", (Time.now.to_i + 3600).to_s)
+      
+      # Use the session's service endpoint as the audience DID
+      # This is derived from the didDoc service endpoint in the session
+      video_service_did = session.service_endpoint
+      
+      auth_uri = get_service_auth_uri(session.pds, video_service_did, "com.atproto.repo.uploadBlob", (Time.now.to_i + 3600).to_s)
       puts "Requesting service auth from: #{auth_uri}"
+      puts "Using session service endpoint as DID: #{video_service_did}"
       
       service_auth_response = HTTParty.get(
         auth_uri,
@@ -138,6 +152,8 @@ module Bskyrb
       
       unless service_auth_response&.success? && service_auth_response["token"]
         puts "Service auth response: #{service_auth_response.inspect}"
+        puts "Response body: #{service_auth_response.body}" if service_auth_response
+        puts "Tried DID: #{video_service_did}"
         raise "Failed to get service auth token: #{service_auth_response&.code} - #{service_auth_response&.message}"
       end
       
