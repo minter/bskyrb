@@ -172,9 +172,41 @@ module Bskyrb
         headers: {"Authorization" => "Bearer #{video_token}", "Content-Type" => content_type, "Content-Length" => video_bytes.size.to_s}
       )
       
+      # Handle the case where video already exists (409 Conflict)
+      if response&.code == 409 && response["error"] == "already_exists" && response["state"] == JOB_STATE_COMPLETED && response["jobId"]
+        puts "Video already exists and is completed, using existing job: #{response['jobId']}"
+        # Skip polling since job is already completed, but we need to get the blob info
+        # Make a job status request to get the blob information
+        job_status_response = HTTParty.get(
+          get_video_job_status_uri(video_service_url, response["jobId"]),
+          headers: {"Authorization" => "Bearer #{video_token}"}
+        )
+        
+        unless job_status_response&.success?
+          raise "Failed to get job status for existing video: #{job_status_response&.code} - #{job_status_response&.message}"
+        end
+        
+        unless job_status_response["jobStatus"]
+          raise "Invalid job status response format: #{job_status_response.inspect}"
+        end
+        
+        if job_status_response["jobStatus"]["state"] == JOB_STATE_COMPLETED
+          puts "Retrieved blob info for existing video"
+          return job_status_response["jobStatus"]["blob"]
+        else
+          raise "Existing video job not in completed state: #{job_status_response["jobStatus"]["state"]}"
+        end
+      end
+      
       unless response&.success? && response["jobId"]
         puts "Video upload response: #{response.inspect}"
         puts "Response body: #{response.body}" if response
+        
+        # Check for specific error types
+        if response&.parsed_response&.dig("jobStatus", "error") == "unconfirmed_email"
+          raise "Video upload failed: Bluesky account email not verified. Please check email and verify account before uploading videos."
+        end
+        
         raise "Failed to upload video: #{response&.code} - #{response&.message}"
       end
       
