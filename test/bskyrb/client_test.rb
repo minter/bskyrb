@@ -238,5 +238,162 @@ module Bskyrb
 
       assert_requested create_stub
     end
+
+    def test_like_raises_when_post_not_found
+      session = create_session
+
+      stub_request(:get, /com.atproto.identity.resolveHandle/)
+        .to_return(
+          status: 200,
+          headers: {"Content-Type" => "application/json"},
+          body: {"did" => "did:plc:testuser123"}.to_json
+        )
+
+      stub_request(:get, /app.bsky.feed.getPostThread/)
+        .to_return(status: 404, body: '{"error": "NotFound"}', headers: {"Content-Type" => "application/json"})
+
+      client = Client.new(session)
+
+      error = assert_raises(RuntimeError) do
+        client.like("https://bsky.app/profile/test.bsky.social/post/missing123")
+      end
+      assert_match(/Failed to fetch the post to like/, error.message)
+    end
+
+    def test_repost_raises_when_post_not_found
+      session = create_session
+
+      stub_request(:get, /com.atproto.identity.resolveHandle/)
+        .to_return(
+          status: 200,
+          headers: {"Content-Type" => "application/json"},
+          body: {"did" => "did:plc:testuser123"}.to_json
+        )
+
+      stub_request(:get, /app.bsky.feed.getPostThread/)
+        .to_return(status: 404, body: '{"error": "NotFound"}', headers: {"Content-Type" => "application/json"})
+
+      client = Client.new(session)
+
+      error = assert_raises(RuntimeError) do
+        client.repost("https://bsky.app/profile/test.bsky.social/post/missing123")
+      end
+      assert_match(/Failed to fetch the post to repost/, error.message)
+    end
+
+    def test_like_succeeds_with_valid_post
+      session = create_session
+
+      stub_request(:get, /com.atproto.identity.resolveHandle/)
+        .to_return(
+          status: 200,
+          headers: {"Content-Type" => "application/json"},
+          body: {"did" => "did:plc:testuser123"}.to_json
+        )
+
+      stub_request(:get, /app.bsky.feed.getPostThread/)
+        .to_return(
+          status: 200,
+          headers: {"Content-Type" => "application/json"},
+          body: {
+            "thread" => {
+              "post" => {
+                "uri" => "at://did:plc:testuser123/app.bsky.feed.post/abc123",
+                "cid" => "bafyreicid123",
+                "record" => {"text" => "test post"},
+                "author" => {"did" => "did:plc:testuser123", "handle" => "test.bsky.social"},
+                "indexedAt" => "2024-01-01T00:00:00Z"
+              }
+            }
+          }.to_json
+        )
+
+      like_stub = stub_request(:post, "https://bsky.social/xrpc/com.atproto.repo.createRecord")
+        .with { |request|
+          body = JSON.parse(request.body)
+          body[:collection] == "app.bsky.feed.like" || body["collection"] == "app.bsky.feed.like"
+        }
+        .to_return(status: 200, body: '{"uri": "at://test"}', headers: {"Content-Type" => "application/json"})
+
+      client = Client.new(session)
+      client.like("https://bsky.app/profile/test.bsky.social/post/abc123")
+
+      assert_requested like_stub
+    end
+
+    def test_create_reply_raises_when_parent_not_found
+      session = create_session
+
+      stub_request(:get, /com.atproto.identity.resolveHandle/)
+        .to_return(
+          status: 200,
+          headers: {"Content-Type" => "application/json"},
+          body: {"did" => "did:plc:testuser123"}.to_json
+        )
+
+      stub_request(:get, /app.bsky.feed.getPostThread/)
+        .to_return(status: 404, body: '{"error": "NotFound"}', headers: {"Content-Type" => "application/json"})
+
+      client = Client.new(session)
+
+      error = assert_raises(RuntimeError) do
+        client.create_reply("https://bsky.app/profile/test.bsky.social/post/missing123", "Reply text")
+      end
+      assert_match(/Failed to fetch the post to reply to/, error.message)
+    end
+
+    def test_find_root_post_raises_when_root_fetch_fails
+      session = create_session
+
+      # First call succeeds (fetching the reply post), second call fails (fetching root)
+      call_count = 0
+      stub_request(:get, /app.bsky.feed.getPostThread/)
+        .to_return { |_request|
+          call_count += 1
+          if call_count == 1
+            {
+              status: 200,
+              headers: {"Content-Type" => "application/json"},
+              body: {
+                "thread" => {
+                  "post" => {
+                    "uri" => "at://did:plc:testuser123/app.bsky.feed.post/reply456",
+                    "cid" => "bafyreicidreply",
+                    "record" => {
+                      "text" => "a reply",
+                      "reply" => {
+                        "root" => {"uri" => "at://did:plc:testuser123/app.bsky.feed.post/root789", "cid" => "bafyroot"},
+                        "parent" => {"uri" => "at://did:plc:testuser123/app.bsky.feed.post/root789", "cid" => "bafyroot"}
+                      }
+                    },
+                    "author" => {"did" => "did:plc:testuser123", "handle" => "test.bsky.social"},
+                    "indexedAt" => "2024-01-01T00:00:00Z"
+                  }
+                }
+              }.to_json
+            }
+          else
+            # Root post fetch fails
+            {status: 404, body: '{"error": "NotFound"}', headers: {"Content-Type" => "application/json"}}
+          end
+        }
+
+      stub_request(:get, /com.atproto.identity.resolveHandle/)
+        .to_return(
+          status: 200,
+          headers: {"Content-Type" => "application/json"},
+          body: {"did" => "did:plc:testuser123"}.to_json
+        )
+
+      stub_request(:post, "https://bsky.social/xrpc/com.atproto.repo.createRecord")
+        .to_return(status: 200, body: '{"uri": "at://test"}', headers: {"Content-Type" => "application/json"})
+
+      client = Client.new(session)
+
+      error = assert_raises(RuntimeError) do
+        client.create_reply("https://bsky.app/profile/test.bsky.social/post/reply456", "Reply to reply")
+      end
+      assert_match(/Failed to fetch root post/, error.message)
+    end
   end
 end

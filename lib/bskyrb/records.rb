@@ -241,7 +241,9 @@ module Bskyrb
       return post unless post.record.respond_to?(:[]) && post.record["reply"]
 
       root_uri = post.record["reply"]["root"]["uri"]
-      get_post_by_url(root_uri)
+      root = get_post_by_url(root_uri)
+      raise "Failed to fetch root post for reply thread" if root.nil?
+      root
     end
 
     def create_post(text, embed_url: nil, embed_images: [], embed_video: nil, created_at: DateTime.now.iso8601(3), langs: ["en-US"], facets: [])
@@ -315,11 +317,13 @@ module Bskyrb
 
     def like(post_url)
       post = get_post_by_url(post_url)
+      raise "Failed to fetch the post to like" if post.nil?
       post_action(post, "app.bsky.feed.like")
     end
 
     def repost(post_url)
       post = get_post_by_url(post_url)
+      raise "Failed to fetch the post to repost" if post.nil?
       post_action(post, "app.bsky.feed.repost")
     end
 
