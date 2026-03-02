@@ -21,9 +21,10 @@ jobs:
   test:
 
     runs-on: ubuntu-latest
+    continue-on-error: ${{ matrix.ruby-version == '4.0' }}
     strategy:
       matrix:
-        ruby-version: ['3.4', '3.3', '3.2']
+        ruby-version: ['4.0', '3.4', '3.3', '3.2']
 
     steps:
     - uses: actions/checkout@v4

@@ -19,4 +19,6 @@ group :development do
   gem "pry", "~> 0.13.1"
   gem "secp256k1-ruby"
   gem "bigdecimal"
+  gem "ostruct"
+  gem "benchmark"
 end
