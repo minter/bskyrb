@@ -9,7 +9,16 @@ module Bskyrb
       stub_request(:post, "https://bsky.social/xrpc/com.atproto.server.createSession").to_return(
         status: 200,
         headers: {"Content-Type" => "application/json"},
-        body: {"accessJwt" => "ACCESS_JWT", "refreshJwt" => "REFRESH_JWT", "did" => "DID"}.to_json
+        body: {
+          "accessJwt" => "ACCESS_JWT",
+          "refreshJwt" => "REFRESH_JWT",
+          "did" => "DID",
+          "didDoc" => {
+            "service" => [
+              {"serviceEndpoint" => "https://morel.us-east.host.bsky.network"}
+            ]
+          }
+        }.to_json
       )
 
       credentials = ATProto::Credentials.new(ENV["BSKY_USERNAME"], ENV["BSKY_PASSWORD"])

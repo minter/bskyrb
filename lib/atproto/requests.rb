@@ -1,3 +1,5 @@
+require "uri"
+
 module ATProto
   class Error < StandardError; end
 
@@ -59,27 +61,25 @@ module ATProto
     end
 
     def upload_video_uri(pds, did, filename)
-      "#{pds}/xrpc/app.bsky.video.uploadVideo?did=#{did}&name=#{filename}"
+      "#{pds}/xrpc/app.bsky.video.uploadVideo?did=#{URI.encode_www_form_component(did)}&name=#{URI.encode_www_form_component(filename)}"
     end
 
     def get_video_job_status_uri(pds, job_id)
-      "#{pds}/xrpc/app.bsky.video.getJobStatus?jobId=#{job_id}"
+      "#{pds}/xrpc/app.bsky.video.getJobStatus?jobId=#{URI.encode_www_form_component(job_id)}"
     end
 
     def get_service_auth_uri(pds, aud, lxm, exp)
-      "#{pds}/xrpc/com.atproto.server.getServiceAuth?aud=#{aud}&lxm=#{lxm}&exp=#{exp}"
+      "#{pds}/xrpc/com.atproto.server.getServiceAuth?aud=#{URI.encode_www_form_component(aud)}&lxm=#{URI.encode_www_form_component(lxm)}&exp=#{URI.encode_www_form_component(exp)}"
     end
 
     def get_profile_uri(pds, username)
-      "#{pds}/xrpc/app.bsky.actor.getProfile?actor=#{username}"
+      "#{pds}/xrpc/app.bsky.actor.getProfile?actor=#{URI.encode_www_form_component(username)}"
     end
 
     def get_followers_uri(pds, username, cursor)
-      "#{pds}/xrpc/app.bsky.graph.getFollowers?actor=#{username}&cursor=#{cursor}"
-    end
-
-    def get_post_thread_uri(pds, query)
-      "#{pds}/xrpc/app.bsky.feed.getPostThread#{query_obj_to_query_params(query)}"
+      uri = "#{pds}/xrpc/app.bsky.graph.getFollowers?actor=#{URI.encode_www_form_component(username)}"
+      uri += "&cursor=#{URI.encode_www_form_component(cursor)}" if cursor
+      uri
     end
 
     def default_authenticated_headers(session)

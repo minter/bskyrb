@@ -6,18 +6,6 @@ require "tempfile"
 require "mini_mime"
 require "addressable/uri"
 require "mini_magick"
-# module Bskyrb
-#   include Atmosfire
-
-#   class Client
-#     include RequestUtils
-#     attr_reader :session
-
-#     def initialize(session)
-#       @session = session
-#     end
-#   end
-# end
 
 module Bskyrb
   module PostTools
@@ -357,7 +345,7 @@ module Bskyrb
         end
         upload_image(tempfile, client)
       rescue => e
-        puts "Error downloading image: #{e.message}"
+        Bskyrb.logger.error("Error downloading image: #{e.message}")
         nil
       ensure
         tempfile.close
@@ -373,7 +361,7 @@ module Bskyrb
       file_path = file.path
       
       if File.size(file_path) > max_size
-        puts "Image size (#{File.size(file_path)} bytes) exceeds limit, compressing..."
+        Bskyrb.logger.debug("Image size (#{File.size(file_path)} bytes) exceeds limit, compressing...")
         compressed_file = compress_image(file_path, max_size)
         file_path = compressed_file.path if compressed_file
       end
@@ -388,7 +376,7 @@ module Bskyrb
           "size" => upload_response["blob"]["size"]
         }
       rescue => e
-        puts "Error uploading image: #{e.message}"
+        Bskyrb.logger.error("Error uploading image: #{e.message}")
         nil
       ensure
         # Clean up compressed temp file if we created one
@@ -417,7 +405,7 @@ module Bskyrb
           image.write temp_file.path
           
           current_size = File.size(temp_file.path)
-          puts "Compressed image size: #{current_size} bytes (quality: #{quality})"
+          Bskyrb.logger.debug("Compressed image size: #{current_size} bytes (quality: #{quality})")
           
           # If we're under the limit or quality is too low, break
           break if current_size <= max_size || quality <= 20
@@ -431,7 +419,7 @@ module Bskyrb
         
         # If still too large, try resizing
         if File.size(temp_file.path) > max_size
-          puts "Still too large after quality reduction, trying resize..."
+          Bskyrb.logger.debug("Still too large after quality reduction, trying resize...")
           image = MiniMagick::Image.open(file_path)
           
           # Resize to 80% of original dimensions and try again
@@ -445,12 +433,12 @@ module Bskyrb
           image.quality "75"
           image.write temp_file.path
           
-          puts "Resized image size: #{File.size(temp_file.path)} bytes"
+          Bskyrb.logger.debug("Resized image size: #{File.size(temp_file.path)} bytes")
         end
         
         temp_file
       rescue => e
-        puts "Error compressing image: #{e.message}"
+        Bskyrb.logger.error("Error compressing image: #{e.message}")
         temp_file&.close
         temp_file&.unlink
         nil

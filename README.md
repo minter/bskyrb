@@ -47,9 +47,9 @@ password = 'your_password'
 pds_url = 'https://bsky.social' # Optional, defaults to https://bsky.social
 
 # Initialize session
-credentials = Bskyrb::Credentials.new(username, password)
-session = Bskyrb::Session.new(credentials, pds_url)
-bsky = Bskyrb::RecordManager.new(session)
+credentials = ATProto::Credentials.new(username, password, pds_url)
+session = ATProto::Session.new(credentials)
+bsky = Bskyrb::Client.new(session)
 ```
 
 ### Basic Operations
@@ -95,6 +95,18 @@ begin
 rescue => e
   puts "Error: #{e.message}"
 end
+```
+
+#### Logging
+
+By default, bskyrb logs at the `WARN` level to stdout. You can configure the logger to see more detail or redirect output:
+
+```ruby
+# Enable debug logging to see all API activity
+Bskyrb.logger.level = Logger::DEBUG
+
+# Or use your own logger
+Bskyrb.logger = Logger.new("bskyrb.log", level: Logger::INFO)
 ```
 
 ### Media Handling
@@ -198,13 +210,13 @@ bsky.create_post(text, facets: [manual_facet])
 ### User Operations
 
 ```ruby
-# Get user information
-did = bsky.resolveHandle("username.bsky.social") # Get DID for a user
-profile = bsky.get_profile("username.bsky.social") # Get full profile
+# Get user profile
+profile = bsky.get_profile("username.bsky.social")
 
-# Follow/Unfollow
-bsky.follow(did)
-bsky.unfollow(did)
+# Follow, block, and mute (all take a username/handle)
+bsky.follow("username.bsky.social")
+bsky.block("username.bsky.social")
+bsky.mute("username.bsky.social")
 
 # Get followers
 followers = bsky.get_followers("username.bsky.social")
@@ -218,13 +230,16 @@ followers_with_cursor = bsky.get_followers("username.bsky.social", cursor: "next
 post = bsky.get_post_by_url("https://bsky.app/profile/username.bsky.social/post/postid")
 
 # Get latest post
-latest_post = bsky.get_latest_skoot("username.bsky.social")
+latest_post = bsky.get_latest_post("username.bsky.social")
 
 # Get multiple recent posts
-recent_posts = bsky.get_latest_n_skoots("username.bsky.social", 5) # Get last 5 posts
+recent_posts = bsky.get_latest_n_posts("username.bsky.social", 5) # Get last 5 posts
 
 # Get full thread
-thread = bsky.get_post_thread("https://bsky.app/profile/username.bsky.social/post/postid", depth: 10)
+thread = bsky.get_post_thread("https://bsky.app/profile/username.bsky.social/post/postid", 10)
+
+# Get your timeline
+timeline = bsky.get_skyline(25)
 ```
 
 ## Development
@@ -237,14 +252,13 @@ To install this gem onto your local machine, run `bundle exec rake install`. To 
 
 The gem requires the following runtime dependencies:
 - json (>= 2.0)
-- net-http
-- date
-- httparty
+- date (>= 3.3.3)
+- httparty (>= 0.21.0)
+- xrpc (>= 0.1.5) - ATProto XRPC client
 - nokogiri (>= 1.16.1) - For parsing HTML and extracting OpenGraph data
 - mini_mime (>= 1.1.2) - For handling MIME types
 - addressable (>= 2.8.1) - For improved URL handling
 - mini_magick (>= 4.12.0) - For image processing and optimization
-- logger (>= 1.5.3) - For improved logging
 - streamio-ffmpeg (>= 3.0.2) - For video processing
 
 ## Code generation

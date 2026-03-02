@@ -1,7 +1,6 @@
 # typed: true
 
 require "bskyrb/post_tools"
-require "mini_magick"
 
 module Bskyrb
   class Client
@@ -17,7 +16,6 @@ module Bskyrb
     def initialize(session)
       @session = session
       @pds = session.credentials.pds
-      @img_compression = ENV.fetch("BSKYRB_IMG_COMPRESSION", "100")
     end
 
     def create_record(input)
@@ -51,167 +49,108 @@ module Bskyrb
       else
         raise "API request failed: #{res.code} - #{res.message}"
       end
-    rescue
+    rescue => e
+      Bskyrb.logger.error("Error fetching post by URL: #{e.message}")
       nil
     end
 
     def upload_blob(blob_path, content_type)
-      if content_type.include?("image")
-        # only images
-        # https://github.com/bluesky-social/atproto/blob/72a5265e05d8eec4f10acdae8f6dfee409ea820a/lexicons/app/bsky/embed/images.json#L24
-        max_size = 999 * 1024  # 999KB in bytes
-        file_size = File.size(blob_path)
+      # Image compression is handled by upload_image/compress_image in PostTools.
+      # This method just reads and uploads the bytes as-is.
+      image_bytes = File.binread(blob_path)
 
-        if file_size > max_size
-          # Reduce the image size using MiniMagick
-          image = MiniMagick::Image.open(blob_path)
+      response = HTTParty.post(
+        upload_blob_uri(session.pds),
+        body: image_bytes,
+        headers: default_authenticated_headers(session).merge("Content-Type" => content_type)
+      )
 
-          # Calculate the scaling factor to reduce the size
-          scaling_factor = Math.sqrt(max_size.to_f / file_size)
-          new_width = (image.width * scaling_factor).to_i
-          new_height = (image.height * scaling_factor).to_i
-
-          # Resize the image
-          image.resize "#{new_width}x#{new_height}"
-
-          # Optionally, you can also compress the image
-          image.quality @img_compression  # Adjust quality as needed (0-100)
-
-          # Save the modified image to a temporary file
-          temp_file = "#{blob_path}.tmp"
-          image.write(temp_file)
-
-          # Use the temporary file for upload
-          image_bytes = File.binread(temp_file)
-          File.delete(temp_file)  # Clean up the temporary file
-        else
-          image_bytes = File.binread(blob_path)  # No changes made here
-        end
+      if response.success?
+        response
       else
-        image_bytes = File.binread(blob_path)
-      end
-
-      begin
-        response = HTTParty.post(
-          upload_blob_uri(session.pds),
-          body: image_bytes,
-          headers: default_authenticated_headers(session).merge("Content-Type" => content_type)
-        )
-
-        if response.success?
-          response
-        else
-          puts "Error uploading blob: #{response.code} - #{response.message}"
-          nil
-        end
-      rescue => e
-        puts "Error uploading blob: #{e.message}"
+        Bskyrb.logger.error("Error uploading blob: #{response.code} - #{response.message}")
         nil
       end
+    rescue => e
+      Bskyrb.logger.error("Error uploading blob: #{e.message}")
+      nil
     end
 
     def upload_video_blob(file_path, content_type)
       # Check video file size (50MB limit as reasonable default)
       max_video_size = 50 * 1024 * 1024  # 50MB in bytes
       file_size = File.size(file_path)
-      
+
       if file_size > max_video_size
         raise "Video file too large: #{file_size} bytes (#{(file_size / 1024.0 / 1024.0).round(2)}MB). Maximum allowed: #{max_video_size / 1024 / 1024}MB"
       end
-      
-      puts "Uploading video: #{File.basename(file_path)} (#{(file_size / 1024.0 / 1024.0).round(2)}MB)"
-      
-      # Get service authentication token for video service
-      puts "Getting service auth for video upload..."
-      puts "Session PDS: #{session.pds}"
-      puts "Session DID: #{session.did}"
-      puts "Service endpoint: #{session.service_endpoint}"
-      
-      # Try to understand the service endpoint structure
-      if session.service_endpoint && session.service_endpoint.include?("host.bsky.network")
-        puts "Service endpoint appears to be a host-based DID"
-        # Extract the host part and see if we can derive video service info
-        host_parts = session.service_endpoint.split(".")
-        puts "Host parts: #{host_parts.inspect}"
-      end
-      
+
+      Bskyrb.logger.info("Uploading video: #{File.basename(file_path)} (#{(file_size / 1024.0 / 1024.0).round(2)}MB)")
+
       video_service_url = "https://video.bsky.app"
-      
+
       # Use the session's service endpoint as the audience DID
       # This is derived from the didDoc service endpoint in the session
       video_service_did = session.service_endpoint
-      
+
       auth_uri = get_service_auth_uri(session.pds, video_service_did, "com.atproto.repo.uploadBlob", (Time.now.to_i + 3600).to_s)
-      puts "Requesting service auth from: #{auth_uri}"
-      puts "Using session service endpoint as DID: #{video_service_did}"
-      
+
       service_auth_response = HTTParty.get(
         auth_uri,
         headers: default_authenticated_headers(session)
       )
-      
+
       unless service_auth_response&.success? && service_auth_response["token"]
-        puts "Service auth response: #{service_auth_response.inspect}"
-        puts "Response body: #{service_auth_response.body}" if service_auth_response
-        puts "Tried DID: #{video_service_did}"
+        Bskyrb.logger.error("Service auth failed: #{service_auth_response&.code} - #{service_auth_response&.message}")
         raise "Failed to get service auth token: #{service_auth_response&.code} - #{service_auth_response&.message}"
       end
-      
+
       video_token = service_auth_response["token"]
-      puts "Service auth successful, got token: #{video_token[0..20]}..." # Log first 20 chars for debugging
 
       # Upload video and get job ID
       video_bytes = File.binread(file_path)
       upload_url = upload_video_uri(video_service_url, session.did, File.basename(file_path))
-      puts "Uploading to URL: #{upload_url}"
-      puts "Video size: #{video_bytes.size} bytes"
-      
+
       response = HTTParty.post(
         upload_url,
         body: video_bytes,
         headers: {"Authorization" => "Bearer #{video_token}", "Content-Type" => content_type, "Content-Length" => video_bytes.size.to_s}
       )
-      
+
       # Handle the case where video already exists (409 Conflict)
       if response&.code == 409 && response["error"] == "already_exists" && response["state"] == JOB_STATE_COMPLETED && response["jobId"]
-        puts "Video already exists and is completed, using existing job: #{response['jobId']}"
-        # Skip polling since job is already completed, but we need to get the blob info
-        # Make a job status request to get the blob information
+        Bskyrb.logger.info("Video already exists, using existing job: #{response["jobId"]}")
         job_status_response = HTTParty.get(
           get_video_job_status_uri(video_service_url, response["jobId"]),
           headers: {"Authorization" => "Bearer #{video_token}"}
         )
-        
+
         unless job_status_response&.success?
           raise "Failed to get job status for existing video: #{job_status_response&.code} - #{job_status_response&.message}"
         end
-        
+
         unless job_status_response["jobStatus"]
-          raise "Invalid job status response format: #{job_status_response.inspect}"
+          raise "Invalid job status response format"
         end
-        
+
         if job_status_response["jobStatus"]["state"] == JOB_STATE_COMPLETED
-          puts "Retrieved blob info for existing video"
           return job_status_response["jobStatus"]["blob"]
         else
           raise "Existing video job not in completed state: #{job_status_response["jobStatus"]["state"]}"
         end
       end
-      
+
       unless response&.success? && response["jobId"]
-        puts "Video upload response: #{response.inspect}"
-        puts "Response body: #{response.body}" if response
-        
         # Check for specific error types
         if response&.parsed_response&.dig("jobStatus", "error") == "unconfirmed_email"
           raise "Video upload failed: Bluesky account email not verified. Please check email and verify account before uploading videos."
         end
-        
+
         raise "Failed to upload video: #{response&.code} - #{response&.message}"
       end
-      
+
       job_id = response["jobId"]
-      puts "Video upload started with job ID: #{job_id}"
+      Bskyrb.logger.info("Video upload started with job ID: #{job_id}")
 
       # Poll for job completion
       start_time = Time.now
@@ -227,14 +166,14 @@ module Bskyrb
         unless job_status_response&.success?
           raise "Failed to get job status: #{job_status_response&.code} - #{job_status_response&.message}"
         end
-        
+
         unless job_status_response["jobStatus"]
-          raise "Invalid job status response format: #{job_status_response.inspect}"
+          raise "Invalid job status response format"
         end
 
         state = job_status_response["jobStatus"]["state"]
-        puts "Video processing status: #{state}"
-        
+        Bskyrb.logger.debug("Video processing status: #{state}")
+
         break if [JOB_STATE_COMPLETED, JOB_STATE_FAILED].include?(state)
 
         if Time.now - start_time > timeout
@@ -245,14 +184,11 @@ module Bskyrb
       end
 
       if job_status_response["jobStatus"]["state"] == JOB_STATE_COMPLETED
-        puts "Video processing completed successfully"
+        Bskyrb.logger.info("Video processing completed successfully")
         job_status_response["jobStatus"]["blob"]
       else
         raise "Video processing failed: #{job_status_response["jobStatus"]["state"]}"
       end
-    rescue => e
-      puts "Error in upload_video_blob: #{e.message}"
-      raise e
     end
 
     def create_post_or_reply(text, reply_to: nil, embed_url: nil, embed_images: [], embed_video: nil, created_at: DateTime.now.iso8601(3), langs: ["en-US"], facets: [])
@@ -398,7 +334,7 @@ module Bskyrb
     def mute(username)
       HTTParty.post(
         mute_actor_uri(session.pds),
-        body: {actor: resolve_handle(username)}.to_json,
+        body: {actor: resolve_handle(session.pds, username)}.to_json,
         headers: default_authenticated_headers(session)
       )
     end
@@ -409,7 +345,6 @@ module Bskyrb
     end
 
     def get_latest_n_posts(username, n)
-      # Build the endpoint URL
       url = "#{session.pds}/xrpc/app.bsky.feed.getAuthorFeed?actor=#{username}&limit=#{n}"
       res = HTTParty.get(url, headers: default_authenticated_headers(session))
       if res.success?
@@ -417,7 +352,8 @@ module Bskyrb
       else
         raise "API request failed: #{res.code} - #{res.message}"
       end
-    rescue
+    rescue => e
+      Bskyrb.logger.error("Error fetching posts for #{username}: #{e.message}")
       nil
     end
 
@@ -429,7 +365,8 @@ module Bskyrb
       else
         raise "API request failed: #{res.code} - #{res.message}"
       end
-    rescue
+    rescue => e
+      Bskyrb.logger.error("Error fetching timeline: #{e.message}")
       nil
     end
 
@@ -441,7 +378,8 @@ module Bskyrb
       else
         raise "API request failed: #{res.code} - #{res.message}"
       end
-    rescue
+    rescue => e
+      Bskyrb.logger.error("Error fetching popular posts: #{e.message}")
       nil
     end
 
@@ -485,7 +423,8 @@ module Bskyrb
       else
         raise "API request failed: #{res.code} - #{res.message}"
       end
-    rescue
+    rescue => e
+      Bskyrb.logger.error("Error deleting post: #{e.message}")
       nil
     end
   end
