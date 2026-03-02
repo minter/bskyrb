@@ -1,5 +1,5 @@
 # Bskyrb
-![](https://img.shields.io/github/actions/workflow/status/ShreyanJain9/bskyrb/ruby.yml?style=plastic)
+![](https://img.shields.io/github/actions/workflow/status/minter/bskyrb/ruby.yml?style=plastic)
 
 - [Bskyrb](#bskyrb)
   - [Installation](#installation)
