@@ -3,5 +3,5 @@
 
 require "minitest/autorun"
 require "webmock/minitest"
-require "byebug"
+require "debug"
 require "bskyrb"

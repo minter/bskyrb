@@ -6,8 +6,8 @@ source "https://rubygems.org"
 gemspec
 
 group :development do
-  gem "byebug"
-  gem "minitest", "5.18.0"
+  gem "debug"
+  gem "minitest"
   gem "parallel", "1.10.0"
   gem "rake", "13.0.6"
   gem "rbs"
@@ -16,7 +16,7 @@ group :development do
   gem "webmock", "3.18.1"
   gem "ruby-lsp"
   gem "watchman"
-  gem "pry", "~> 0.13.1"
+  gem "pry"
   gem "secp256k1-ruby"
   gem "bigdecimal"
   gem "ostruct"
