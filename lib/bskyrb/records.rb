@@ -77,8 +77,8 @@ module Bskyrb
     end
 
     def upload_video_blob(file_path, content_type)
-      # Check video file size (50MB limit as reasonable default)
-      max_video_size = 50 * 1024 * 1024  # 50MB in bytes
+      # Check video file size (300MB limit, matching Bluesky's maximum)
+      max_video_size = 300 * 1024 * 1024  # 300MB in bytes
       file_size = File.size(file_path)
 
       if file_size > max_video_size

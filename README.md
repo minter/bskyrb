@@ -132,11 +132,15 @@ bsky.create_post("Check out this link!", embed_url: "https://example.com")
 bsky.create_reply(post_uri, "Great post!", embed_images: ["path/to/image.jpg"])
 ```
 
-Images are automatically optimized:
+Images are automatically optimized to fit Bluesky's limits:
+- Up to 4 images per post
 - Large images are automatically resized and compressed
-- Maximum size is enforced (999KB)
+- Maximum size is enforced (2MB per image), and images larger than 4000x4000 pixels are downscaled
 - Image quality is preserved while reducing file size
 - Supports both local files and remote URLs
+
+Videos are validated before upload:
+- Maximum size is enforced (300MB)
 
 ### Rich Text Features
 

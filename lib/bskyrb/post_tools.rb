@@ -356,13 +356,15 @@ module Bskyrb
     def upload_image(file, client)
       content_type = MiniMime.lookup_by_filename(file.path)&.content_type || "application/octet-stream"
       
-      # Check if file needs compression (Bluesky limit is ~976KB, we target 950KB for buffer)
-      max_size = 950 * 1024 # 950KB in bytes
+      # Bluesky image limits: 2MB per image and 4000x4000 pixels.
+      # Target slightly under the byte limit to leave a safety buffer.
+      max_size = 1950 * 1024 # ~1.95MB in bytes
+      max_dimension = 4000
       file_path = file.path
-      
-      if File.size(file_path) > max_size
-        Bskyrb.logger.debug("Image size (#{File.size(file_path)} bytes) exceeds limit, compressing...")
-        compressed_file = compress_image(file_path, max_size)
+
+      unless image_within_limits?(file_path, max_size, max_dimension)
+        Bskyrb.logger.debug("Image (#{File.size(file_path)} bytes) exceeds size or dimension limit, compressing...")
+        compressed_file = compress_image(file_path, max_size, max_dimension)
         file_path = compressed_file.path if compressed_file
       end
       
@@ -387,55 +389,65 @@ module Bskyrb
       end
     end
 
-    def compress_image(file_path, max_size)
+    def image_within_limits?(file_path, max_size, max_dimension)
+      return false if File.size(file_path) > max_size
+
+      image = MiniMagick::Image.open(file_path)
+      image.width <= max_dimension && image.height <= max_dimension
+    rescue => e
+      # If we can't inspect the image (e.g. ImageMagick unavailable), let the
+      # upload proceed and rely on the server to validate.
+      Bskyrb.logger.debug("Could not inspect image dimensions: #{e.message}")
+      true
+    end
+
+    def compress_image(file_path, max_size, max_dimension = 4000)
       begin
         # Create a temporary file for the compressed image
         temp_file = Tempfile.new(["compressed", File.extname(file_path)])
-        
-        # Use MiniMagick to compress the image
-        image = MiniMagick::Image.open(file_path)
-        
+
         # Start with high quality and reduce if needed
         quality = 85
-        
-        # Try different quality levels until we get under the size limit
+
+        # Try different quality levels until we get under the size limit.
+        # Each pass also constrains dimensions to max_dimension (the trailing
+        # ">" only shrinks images larger than the box, preserving aspect ratio).
         loop do
+          image = MiniMagick::Image.open(file_path)
+          image.resize "#{max_dimension}x#{max_dimension}>"
           image.format "jpeg" # Convert to JPEG for better compression
           image.quality quality.to_s
           image.write temp_file.path
-          
+
           current_size = File.size(temp_file.path)
           Bskyrb.logger.debug("Compressed image size: #{current_size} bytes (quality: #{quality})")
-          
+
           # If we're under the limit or quality is too low, break
           break if current_size <= max_size || quality <= 20
-          
+
           # Reduce quality for next iteration
           quality -= 15
-          
-          # Reset the image object to avoid cumulative effects
-          image = MiniMagick::Image.open(file_path)
         end
-        
+
         # If still too large, try resizing
         if File.size(temp_file.path) > max_size
           Bskyrb.logger.debug("Still too large after quality reduction, trying resize...")
           image = MiniMagick::Image.open(file_path)
-          
-          # Resize to 80% of original dimensions and try again
-          original_width = image.width
-          original_height = image.height
+
+          # Resize to 80% of the dimension-capped size and try again
+          original_width = [image.width, max_dimension].min
+          original_height = [image.height, max_dimension].min
           new_width = (original_width * 0.8).to_i
           new_height = (original_height * 0.8).to_i
-          
+
           image.resize "#{new_width}x#{new_height}"
           image.format "jpeg"
           image.quality "75"
           image.write temp_file.path
-          
+
           Bskyrb.logger.debug("Resized image size: #{File.size(temp_file.path)} bytes")
         end
-        
+
         temp_file
       rescue => e
         Bskyrb.logger.error("Error compressing image: #{e.message}")
