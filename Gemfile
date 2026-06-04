@@ -21,4 +21,5 @@ group :development do
   gem "bigdecimal"
   gem "ostruct"
   gem "benchmark"
+  gem "base64"
 end
