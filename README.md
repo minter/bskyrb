@@ -112,7 +112,7 @@ Bskyrb.logger = Logger.new("bskyrb.log", level: Logger::INFO)
 ### Media Handling
 
 ```ruby
-# Post with images (up to 4 images supported)
+# Post with images (up to 10 images supported)
 bsky.create_post("Check out these photos!", embed_images: ["path/to/image1.jpg", "path/to/image2.jpg"])
 
 # Post with images and alt text
@@ -133,7 +133,8 @@ bsky.create_reply(post_uri, "Great post!", embed_images: ["path/to/image.jpg"])
 ```
 
 Images are automatically optimized to fit Bluesky's limits:
-- Up to 4 images per post
+- Up to 10 images per post
+- Posts with 5 or more images use Bluesky's gallery embed, which clients render as a photo carousel
 - Large images are automatically resized and compressed
 - Maximum size is enforced (2MB per image), and images larger than 4000x4000 pixels are downscaled
 - Image quality is preserved while reducing file size
