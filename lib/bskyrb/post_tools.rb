@@ -9,6 +9,10 @@ require "mini_magick"
 
 module Bskyrb
   module PostTools
+    IMAGE_EMBED_MAX_IMAGES = 4
+    GALLERY_EMBED_MAX_ITEMS = 10
+    DEFAULT_IMAGE_ASPECT_RATIO = {"width" => 1, "height" => 1}.freeze
+
     # Check if two facets have overlapping byte ranges
     def facets_overlap?(facet1, facet2)
       start1 = facet1["index"]["byteStart"]
@@ -274,34 +278,59 @@ module Bskyrb
     end
 
     def create_image_embed(embed_images, client)
-      # Limited to a maximum of 4 images
       images = []
-      embed_images = [embed_images] if embed_images.is_a?(String)
-      embed_images[0..3].each do |image|
-        # Get blob data for the image
-        blob = if image.is_a?(Hash)
-                 # If image has alt text, it will be in the format: { "url" => "...", "alt" => "..." }
-                 alt_text = image["alt"] || ""
-                 {
-                   "alt" => alt_text,
-                   "image" => get_image_blob(image["url"], client)
-                 }
-               else
-                 # If just a string/file is passed, use empty alt text
-                 {
-                   "alt" => "",
-                   "image" => get_image_blob(image, client)
-                 }
-               end
-        images << blob if blob["image"] # Only add if blob was successfully created
+
+      normalize_embed_images(embed_images).first(GALLERY_EMBED_MAX_ITEMS).each do |image|
+        image_item = build_image_embed_item(image, client)
+        images << image_item if image_item&.dig("image")
       end
 
       return nil if images.empty?
-      # Return the properly formatted embed data
+
+      if images.length <= IMAGE_EMBED_MAX_IMAGES
+        return {
+          "$type" => "app.bsky.embed.images",
+          "images" => images
+        }
+      end
+
       {
-        "$type" => "app.bsky.embed.images",
-        "images" => images
+        "$type" => "app.bsky.embed.gallery",
+        "items" => images.map { |image| gallery_image_item(image) }
       }
+    end
+
+    def normalize_embed_images(embed_images)
+      return [] if embed_images.nil?
+      return [embed_images] if embed_images.is_a?(String) || embed_images.is_a?(File) || embed_images.is_a?(Tempfile)
+
+      embed_images
+    end
+
+    def build_image_embed_item(image, client)
+      image_source = image
+      alt_text = ""
+
+      if image.is_a?(Hash)
+        image_source = image["url"]
+        alt_text = image["alt"] || ""
+      end
+
+      upload_metadata = get_image_upload_metadata(image_source, client)
+      return nil unless upload_metadata&.dig("image")
+
+      {
+        "alt" => alt_text,
+        "image" => upload_metadata["image"],
+        "aspectRatio" => upload_metadata["aspectRatio"]
+      }
+    end
+
+    def gallery_image_item(image)
+      image.merge(
+        "$type" => "app.bsky.embed.gallery#image",
+        "aspectRatio" => image["aspectRatio"] || DEFAULT_IMAGE_ASPECT_RATIO.dup
+      )
     end
 
     def create_video_embed(embed_video_file_path, client)
@@ -314,22 +343,32 @@ module Bskyrb
     end
 
     def get_image_blob(image, client)
+      upload_metadata = get_image_upload_metadata(image, client)
+      upload_metadata && upload_metadata["image"]
+    end
+
+    def get_image_upload_metadata(image, client)
       case image
       when String
         if image.start_with?("http://", "https://")
           uri = Addressable::URI.parse(image).normalize
-          download_and_upload_image(uri, client)
+          download_and_upload_image_with_metadata(uri, client)
         else
-          upload_image(File.open(image), client)
+          File.open(image) { |file| upload_image_with_metadata(file, client) }
         end
       when File, Tempfile
-        upload_image(image, client)
+        upload_image_with_metadata(image, client)
       else
         raise ArgumentError, "Invalid image type. Expected String (URL) or File object."
       end
     end
 
     def download_and_upload_image(uri, client)
+      upload_metadata = download_and_upload_image_with_metadata(uri, client)
+      upload_metadata && upload_metadata["image"]
+    end
+
+    def download_and_upload_image_with_metadata(uri, client)
       tempfile = Tempfile.new(["thumb", File.extname(uri.path)])
       begin
         # Download the file
@@ -343,7 +382,7 @@ module Bskyrb
             end
           end
         end
-        upload_image(tempfile, client)
+        upload_image_with_metadata(tempfile, client)
       rescue => e
         Bskyrb.logger.error("Error downloading image: #{e.message}")
         nil
@@ -351,6 +390,16 @@ module Bskyrb
         tempfile.close
         tempfile.unlink
       end
+    end
+
+    def upload_image_with_metadata(file, client)
+      image = upload_image(file, client)
+      return nil unless image
+
+      {
+        "image" => image,
+        "aspectRatio" => get_image_aspect_ratio(file.path)
+      }
     end
 
     def upload_image(file, client)
@@ -387,6 +436,17 @@ module Bskyrb
           compressed_file.unlink
         end
       end
+    end
+
+    def get_image_aspect_ratio(file_path)
+      image = MiniMagick::Image.open(file_path)
+      {
+        "width" => image.width,
+        "height" => image.height
+      }
+    rescue => e
+      Bskyrb.logger.debug("Could not inspect image aspect ratio: #{e.message}")
+      DEFAULT_IMAGE_ASPECT_RATIO.dup
     end
 
     def image_within_limits?(file_path, max_size, max_dimension)

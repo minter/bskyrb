@@ -10,14 +10,85 @@ module Bskyrb
     include PostTools
 
     attr_accessor :pds
+    attr_reader :uploaded_images
 
     def initialize(pds: "https://bsky.social")
       @pds = pds
+      @uploaded_images = []
     end
 
     # Stub resolve_handle to avoid network calls
     def resolve_handle(_pds, username)
       {"did" => "did:plc:fake#{username.gsub(".", "")}"}
+    end
+
+    def create_test_image_embed(embed_images)
+      create_image_embed(embed_images, self)
+    end
+
+    def get_image_upload_metadata(image, _client)
+      @uploaded_images << image
+      {
+        "image" => {
+          "$type" => "blob",
+          "ref" => {"$link" => "fake-image-#{@uploaded_images.length}"},
+          "mimeType" => "image/jpeg",
+          "size" => 1234
+        },
+        "aspectRatio" => {
+          "width" => @uploaded_images.length,
+          "height" => 1
+        }
+      }
+    end
+  end
+
+  class PostToolsImageEmbedTest < Minitest::Test
+    def setup
+      @harness = PostToolsTestHarness.new
+    end
+
+    def test_uses_images_embed_for_four_photos
+      images = (1..4).map { |n| "image#{n}.jpg" }
+
+      embed = @harness.create_test_image_embed(images)
+
+      assert_equal "app.bsky.embed.images", embed["$type"]
+      assert_equal 4, embed["images"].length
+      assert_nil embed["images"][0]["$type"]
+      assert_equal images, @harness.uploaded_images
+    end
+
+    def test_uses_gallery_embed_for_five_photos
+      images = (1..5).map { |n| "image#{n}.jpg" }
+
+      embed = @harness.create_test_image_embed(images)
+
+      assert_equal "app.bsky.embed.gallery", embed["$type"]
+      assert_equal 5, embed["items"].length
+      assert_equal "app.bsky.embed.gallery#image", embed["items"][0]["$type"]
+      assert_equal({"width" => 1, "height" => 1}, embed["items"][0]["aspectRatio"])
+      assert_equal images, @harness.uploaded_images
+    end
+
+    def test_limits_gallery_embed_to_ten_photos
+      images = (1..11).map { |n| "image#{n}.jpg" }
+
+      embed = @harness.create_test_image_embed(images)
+
+      assert_equal "app.bsky.embed.gallery", embed["$type"]
+      assert_equal 10, embed["items"].length
+      assert_equal images.first(10), @harness.uploaded_images
+    end
+
+    def test_preserves_alt_text_for_gallery_images
+      images = (1..5).map do |n|
+        {"url" => "image#{n}.jpg", "alt" => "Alt text #{n}"}
+      end
+
+      embed = @harness.create_test_image_embed(images)
+
+      assert_equal "Alt text 5", embed["items"][4]["alt"]
     end
   end
 
