@@ -2,10 +2,13 @@
 
 require "json"
 require "erb"
+require "fileutils"
 
 module Bskyrb
   module LexiconParser
     @@active_namespace = ""
+
+    DEFAULT_LEXICON_SOURCE = "atproto"
 
     def self.def_is_query(defn)
       defn["defs"].has_key?("main") &&
@@ -94,6 +97,43 @@ module Bskyrb
       output
     end
 
+    def self.lexicon_files(source = DEFAULT_LEXICON_SOURCE)
+      source = source.to_s
+      lexicon_root = if File.directory?(File.join(source, "lexicons"))
+        File.join(source, "lexicons")
+      elsif File.basename(source) == "lexicons" && File.directory?(source)
+        source
+      else
+        source
+      end
+
+      files = Dir[File.join(lexicon_root, "**/*.json")].sort
+      raise ArgumentError, "No lexicon JSON files found under #{source}" if files.empty?
+
+      files
+    end
+
+    def self.generated_source(lexicon_source = DEFAULT_LEXICON_SOURCE)
+      basic_defs = {}
+      lexicon_files(lexicon_source).each do |file|
+        hashes = build_classes_hash_from_lexicon_defs(file)
+        basic_defs = basic_defs.merge(hashes) unless hashes.empty?
+      end
+
+      input_output_defs = {}
+      lexicon_files(lexicon_source).each do |file|
+        hashes = build_queries_and_procedures_from_lexicon(file)
+        input_output_defs = input_output_defs.merge(hashes) unless hashes.nil? || hashes.empty?
+      end
+
+      [
+        "module Bskyrb",
+        basic_class_definitions(basic_defs),
+        input_output_class_definitions(input_output_defs),
+        "end"
+      ].join("\n")
+    end
+
     def self.ref_to_class_str(ref, ns = @@active_namespace)
       klass_str_lower = ref.split("#")[-1]
       klass_str = klass_str_lower[0].capitalize + klass_str_lower.slice(1..)
@@ -151,7 +191,7 @@ module <%= klass_str.split("::").first %>
       def to_h
         {
           <% properties[top_level_key].each do |key, value| %>
-            "<%= key %>" => <%= key %>,
+            "<%= key %>" => instance_variable_get(<%= ("@" + key).inspect %>),
           <% end %>
         }
       end
@@ -190,24 +230,15 @@ end
 end
 
 if __FILE__ == $0
-  basic_defs = {}
-  Dir["atproto/lexicons/**/*.json"].each do |file|
-    hashes = Bskyrb::LexiconParser.build_classes_hash_from_lexicon_defs(file)
-    basic_defs = basic_defs.merge(hashes) unless hashes.empty?
-  end
-
-  input_output_defs = {}
-  Dir["atproto/lexicons/**/*.json"].each do |file|
-    hashes = Bskyrb::LexiconParser.build_queries_and_procedures_from_lexicon(file)
-    input_output_defs = input_output_defs.merge(hashes) unless hashes.nil? || hashes.empty?
-  end
+  lexicon_source = ARGV[0] || ENV.fetch("BSKYRB_LEXICONS", Bskyrb::LexiconParser::DEFAULT_LEXICON_SOURCE)
 
   File.open("lib/bskyrb/generated_classes.rb", "w") do |f|
-    f.puts "module Bskyrb"
-    f.puts Bskyrb::LexiconParser.basic_class_definitions(basic_defs)
-    f.puts Bskyrb::LexiconParser.input_output_class_definitions(input_output_defs)
-    f.puts "end"
+    f.puts Bskyrb::LexiconParser.generated_source(lexicon_source)
   end
-  `bin/format`
-  `bundle exec rbs prototype rb lib/bskyrb/generated_classes.rb > sig/generated_classes.rbs`
+  FileUtils.mkdir_p("tmp/rubocop_cache")
+  abort "bin/format failed" unless system({"RUBOCOP_CACHE_ROOT" => File.expand_path("tmp/rubocop_cache")}, "bin/format")
+
+  File.open("sig/generated_classes.rbs", "w") do |output|
+    abort "rbs prototype failed" unless system("bundle", "exec", "rbs", "prototype", "rb", "lib/bskyrb/generated_classes.rb", out: output)
+  end
 end
