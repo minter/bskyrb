@@ -6,6 +6,7 @@ require "tempfile"
 require "mini_mime"
 require "addressable/uri"
 require "mini_magick"
+require "public_suffix"
 require "streamio-ffmpeg"
 
 module Bskyrb
@@ -13,6 +14,13 @@ module Bskyrb
     IMAGE_EMBED_MAX_IMAGES = 4
     GALLERY_EMBED_MAX_ITEMS = 10
     DEFAULT_IMAGE_ASPECT_RATIO = {"width" => 1, "height" => 1}.freeze
+    MENTION_PATTERN = /(^|\s|\()(@)([a-zA-Z0-9.-]+)(\b)/
+    URL_PATTERN = /(^|\s|\()((https?:\/\/\S+)|(([a-z][a-z0-9]*(\.[a-z0-9]+)+)\S*))/i
+    TRAILING_PUNCTUATION_PATTERN = /\p{P}+$/u
+    ZERO_WIDTH_TAG_CHARS = "\u00AD\u2060\u200A\u200B\u200C\u200D\u20e2"
+    TAG_PATTERN = /(^|\s)([#＃])((?!\ufe0f)[^\s#{ZERO_WIDTH_TAG_CHARS}]*[^\d\s\p{P}#{ZERO_WIDTH_TAG_CHARS}]+[^\s#{ZERO_WIDTH_TAG_CHARS}]*)?/u
+    CASHTAG_PATTERN = /(^|\s|\()\$([A-Za-z][A-Za-z0-9]{0,4})(?=\s|$|[.,;:!?)"'\u2019])/u
+    NON_LINK_TLDS = %w[avif gif jpeg jpg png svg webp].freeze
 
     # Check if two facets have overlapping byte ranges
     def facets_overlap?(facet1, facet2)
@@ -51,104 +59,16 @@ module Bskyrb
     def find_automatic_facets(text)
       facets = []
 
-      # Regex patterns
-      mention_pattern = /(^|\s|\()(@)([a-zA-Z0-9.-]+)(\b)/
-      link_pattern = URI::DEFAULT_PARSER.make_regexp(%w[http https])
-      hashtag_pattern = /(?<![\w#])(#)((?=[a-zA-Z0-9_]*[a-zA-Z][a-zA-Z0-9_]*)[a-zA-Z0-9_]+)(?!\w)/  # Hashtag pattern requiring at least one letter
-
-      # Find mentions
-      text.enum_for(:scan, mention_pattern).each do |m|
-        match_data = Regexp.last_match
-        mention_text = "#{m[1]}#{m[2]}"
-        index_start = text[0...match_data.begin(2)].bytesize
-        index_end = text[0...match_data.end(3)].bytesize
-        did = resolve_handle(@pds, mention_text[1..])["did"]
-        unless did.nil?
-          facets.push(
-            "$type" => "app.bsky.richtext.facet",
-            "index" => {
-              "byteStart" => index_start,
-              "byteEnd" => index_end
-            },
-            "features" => [
-              {
-                "did" => did, # this is the matched mention
-                "$type" => "app.bsky.richtext.facet#mention"
-              }
-            ]
-          )
-        end
-      end
-
-      # Find links - with improved validation
-      text.scan(link_pattern) do
-        match_data = Regexp.last_match
-        full_match = match_data[0]
-        next if full_match.nil? || full_match.empty?
-
-        link_text = trim_trailing_link_punctuation(full_match)
-
-        # Only process absolute URLs (starting with http:// or https://)
-        next unless link_text.start_with?("http://", "https://")
-
-        index_start = text[0...match_data.begin(0)].bytesize
-        index_end = index_start + link_text.bytesize
-
-        begin
-          uri = URI.parse(link_text)
-          # Additional validation to ensure it's a proper URI
-          next unless uri.is_a?(URI::HTTP) || uri.is_a?(URI::HTTPS)
-          next if uri.host.nil? || uri.host.empty?
-
-          normalized_uri = uri.normalize.to_s
-          facets.push(
-            "$type" => "app.bsky.richtext.facet",
-            "index" => {
-              "byteStart" => index_start,
-              "byteEnd" => index_end
-            },
-            "features" => [
-              {
-                "uri" => normalized_uri,
-                "$type" => "app.bsky.richtext.facet#link"
-              }
-            ]
-          )
-        rescue URI::InvalidURIError
-          # Silently skip invalid URIs
-        end
-      end
-
-      # Find hashtags with improved handling
-      text.scan(hashtag_pattern) do
-        match_data = Regexp.last_match
-
-        index_start = text[0...match_data.begin(0)].bytesize
-        index_end = text[0...match_data.end(0)].bytesize
-
-        # Extract just the tag part (without the # symbol)
-        tag_text = match_data[2]
-
-        facets.push(
-          "$type" => "app.bsky.richtext.facet",
-          "index" => {
-            "byteStart" => index_start,
-            "byteEnd" => index_end
-          },
-          "features" => [
-            {
-              "tag" => tag_text,
-              "$type" => "app.bsky.richtext.facet#tag"
-            }
-          ]
-        )
-      end
+      find_mentions(text, facets)
+      find_links(text, facets)
+      find_hashtags(text, facets)
+      find_cashtags(text, facets)
 
       facets
     end
 
     def trim_trailing_link_punctuation(link_text)
-      link_text.sub(/[.,!?;:]+$/, "")
+      trim_link_text(link_text).first
     end
 
     # Validate facets structure and content
@@ -252,6 +172,159 @@ module Bskyrb
     end
 
     private
+
+    def find_mentions(text, facets)
+      text.scan(MENTION_PATTERN) do
+        match_data = Regexp.last_match
+        handle = match_data[3]
+        next unless valid_facet_domain?(handle) || handle.end_with?(".test")
+
+        did = resolve_mention_did(handle)
+        next if did.nil? || did.empty?
+
+        index_start = text[0...match_data.begin(2)].bytesize
+        index_end = text[0...match_data.end(3)].bytesize
+        facet = mention_facet(index_start, index_end, did)
+        facets << facet unless has_conflict?(facet, facets)
+      end
+    end
+
+    def find_links(text, facets)
+      text.scan(URL_PATTERN) do
+        match_data = Regexp.last_match
+        link_text = match_data[2]
+        uri = link_text.dup
+
+        unless uri.start_with?("http://", "https://")
+          domain = match_data[5]
+          next unless domain && valid_facet_domain?(domain)
+          uri = "https://#{uri}"
+        end
+
+        trimmed_uri, trimmed_chars = trim_link_text(uri)
+        trimmed_link_text = link_text[0...(link_text.length - trimmed_chars)]
+        next if trimmed_link_text.nil? || trimmed_link_text.empty?
+
+        index_start = text[0...match_data.begin(2)].bytesize
+        index_end = index_start + trimmed_link_text.bytesize
+        facet = link_facet(index_start, index_end, trimmed_uri)
+        facets << facet unless has_conflict?(facet, facets)
+      end
+    end
+
+    def find_hashtags(text, facets)
+      text.scan(TAG_PATTERN) do
+        match_data = Regexp.last_match
+        tag = match_data[3]
+        next if tag.nil?
+
+        tag = tag.strip.sub(TRAILING_PUNCTUATION_PATTERN, "")
+        next if tag.empty?
+        next if tag.length > 64 && tag.grapheme_clusters.length > 64
+
+        marker = match_data[2]
+        index_start = text[0...match_data.begin(2)].bytesize
+        index_end = index_start + marker.bytesize + tag.bytesize
+        facet = tag_facet(index_start, index_end, tag)
+        facets << facet unless has_conflict?(facet, facets)
+      end
+    end
+
+    def find_cashtags(text, facets)
+      text.scan(CASHTAG_PATTERN) do
+        match_data = Regexp.last_match
+        ticker = match_data[2]
+        next if ticker.nil? || ticker.empty?
+
+        tag = "$#{ticker.upcase}"
+        index_start = text[0...match_data.begin(0)].bytesize + match_data[1].bytesize
+        index_end = index_start + 1 + ticker.bytesize
+        facet = tag_facet(index_start, index_end, tag)
+        facets << facet unless has_conflict?(facet, facets)
+      end
+    end
+
+    def resolve_mention_did(handle)
+      resolve_handle(@pds, handle)&.dig("did")
+    rescue
+      nil
+    end
+
+    def trim_link_text(uri)
+      trimmed = uri.dup
+      trimmed_chars = 0
+
+      if trimmed.match?(/[.,;:!?]\z/)
+        trimmed = trimmed[0...-1]
+        trimmed_chars += 1
+      end
+
+      if trimmed.end_with?(")") && !trimmed.include?("(")
+        trimmed = trimmed[0...-1]
+        trimmed_chars += 1
+      end
+
+      [trimmed, trimmed_chars]
+    end
+
+    def valid_facet_domain?(domain)
+      normalized = domain.to_s.downcase
+      return false unless normalized.match?(/\A[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+\z/)
+      tld = normalized.split(".").last
+      return false if tld.length < 2 || NON_LINK_TLDS.include?(tld)
+
+      PublicSuffix.valid?(normalized)
+    rescue PublicSuffix::Error
+      false
+    end
+
+    def mention_facet(byte_start, byte_end, did)
+      {
+        "$type" => "app.bsky.richtext.facet",
+        "index" => {
+          "byteStart" => byte_start,
+          "byteEnd" => byte_end
+        },
+        "features" => [
+          {
+            "did" => did,
+            "$type" => "app.bsky.richtext.facet#mention"
+          }
+        ]
+      }
+    end
+
+    def link_facet(byte_start, byte_end, uri)
+      {
+        "$type" => "app.bsky.richtext.facet",
+        "index" => {
+          "byteStart" => byte_start,
+          "byteEnd" => byte_end
+        },
+        "features" => [
+          {
+            "uri" => uri,
+            "$type" => "app.bsky.richtext.facet#link"
+          }
+        ]
+      }
+    end
+
+    def tag_facet(byte_start, byte_end, tag)
+      {
+        "$type" => "app.bsky.richtext.facet",
+        "index" => {
+          "byteStart" => byte_start,
+          "byteEnd" => byte_end
+        },
+        "features" => [
+          {
+            "tag" => tag,
+            "$type" => "app.bsky.richtext.facet#tag"
+          }
+        ]
+      }
+    end
 
     def create_external_embed(embed_url, client)
       response = HTTParty.get(embed_url)

@@ -2,21 +2,6 @@
 
 Larger follow-up work that should be handled in separate branches/PRs.
 
-## Rich-Text Parser Parity
-
-Port Bluesky's official rich-text facet detection behavior to Ruby-native code.
-
-Scope:
-- Mentions with current handle/domain validation.
-- Links, including bare domains, trailing punctuation, and unmatched trailing parens.
-- Unicode-aware hashtags.
-- Cashtags.
-- UTF-8 byte offsets and overlap behavior.
-- Fixture tests based on current official parser behavior.
-
-Risk:
-- Medium. Mostly contained to `Bskyrb::PostTools`, but changes user-visible facets.
-
 ## Generated Client Surface
 
 Build on the refreshed generated classes by making more of the ATProto endpoint surface available through generated or semi-generated client helpers.
@@ -47,5 +32,4 @@ Risk:
 ## Suggested Order
 
 1. Error model standardization if reliability and observability are the priority.
-2. Rich-text parser parity if post fidelity is the priority.
-3. Generated client surface if maintenance and future API drift are the priority.
+2. Generated client surface if maintenance and future API drift are the priority.

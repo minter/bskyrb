@@ -4,6 +4,7 @@
 - Raise video upload size limit to 300MB to match Bluesky's maximum
 - Raise image size limit to 2MB per image and enforce Bluesky's 4000x4000 pixel cap (oversized images are automatically downscaled)
 - Refresh generated classes from current ATProto lexicons, including current feed fields and video lexicons
+- Rework automatic rich text facet parsing to match Bluesky behavior for bare links, trailing punctuation, Unicode hashtags, and cashtags
 
 ## [0.1.0] - 2023-04-16
 

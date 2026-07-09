@@ -149,11 +149,12 @@ module Bskyrb
       assert_equal "hello", tag_facets[0]["features"][0]["tag"]
     end
 
-    def test_no_double_hash
+    def test_detects_double_hash_tag
       facets = @harness.find_automatic_facets("##hello world")
       tag_facets = facets.select { |f| f["features"][0]["$type"] == "app.bsky.richtext.facet#tag" }
 
-      assert_equal 0, tag_facets.length
+      assert_equal 1, tag_facets.length
+      assert_equal "#hello", tag_facets[0]["features"][0]["tag"]
     end
 
     def test_hashtag_with_underscores
@@ -184,6 +185,92 @@ module Bskyrb
       assert_equal 5, tag_facets[0]["index"]["byteStart"]
       assert_equal 11, tag_facets[0]["index"]["byteEnd"]
     end
+
+    def test_hashtag_strips_trailing_punctuation
+      facets = @harness.find_automatic_facets("strips trailing #punctuation, #like. #this!")
+      tag_facets = facets.select { |f| f["features"][0]["$type"] == "app.bsky.richtext.facet#tag" }
+
+      assert_equal ["punctuation", "like", "this"], tag_facets.map { |f| f["features"][0]["tag"] }
+      assert_equal [
+        {"byteStart" => 16, "byteEnd" => 28},
+        {"byteStart" => 30, "byteEnd" => 35},
+        {"byteStart" => 37, "byteEnd" => 42}
+      ], tag_facets.map { |f| f["index"] }
+    end
+
+    def test_hashtag_strips_multiple_trailing_punctuation_marks
+      facets = @harness.find_automatic_facets("strips #multi_trailing___...")
+      tag_facet = facets.find { |f| f["features"][0]["$type"] == "app.bsky.richtext.facet#tag" }
+
+      assert_equal "multi_trailing", tag_facet["features"][0]["tag"]
+      assert_equal 7, tag_facet["index"]["byteStart"]
+      assert_equal 22, tag_facet["index"]["byteEnd"]
+    end
+
+    def test_hashtag_allows_internal_punctuation
+      facets = @harness.find_automatic_facets("works #with,punctuation")
+      tag_facet = facets.find { |f| f["features"][0]["$type"] == "app.bsky.richtext.facet#tag" }
+
+      assert_equal "with,punctuation", tag_facet["features"][0]["tag"]
+      assert_equal 6, tag_facet["index"]["byteStart"]
+      assert_equal 23, tag_facet["index"]["byteEnd"]
+    end
+
+    def test_detects_emoji_hashtag
+      facets = @harness.find_automatic_facets("works with #🦋 emoji")
+      tag_facet = facets.find { |f| f["features"][0]["$type"] == "app.bsky.richtext.facet#tag" }
+
+      assert_equal "🦋", tag_facet["features"][0]["tag"]
+      assert_equal 11, tag_facet["index"]["byteStart"]
+      assert_equal 16, tag_facet["index"]["byteEnd"]
+    end
+
+    def test_detects_fullwidth_hash
+      facets = @harness.find_automatic_facets("match full width number sign: ＃tag")
+      tag_facet = facets.find { |f| f["features"][0]["$type"] == "app.bsky.richtext.facet#tag" }
+
+      assert_equal "tag", tag_facet["features"][0]["tag"]
+      assert_equal 30, tag_facet["index"]["byteStart"]
+      assert_equal 36, tag_facet["index"]["byteEnd"]
+    end
+
+    def test_rejects_hashtags_over_sixty_four_graphemes
+      facets = @harness.find_automatic_facets("body #thisisa65characterstring_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab")
+      tag_facets = facets.select { |f| f["features"][0]["$type"] == "app.bsky.richtext.facet#tag" }
+
+      assert_empty tag_facets
+    end
+  end
+
+  class PostToolsCashtagTest < Minitest::Test
+    def setup
+      @harness = PostToolsTestHarness.new
+    end
+
+    def test_detects_cashtag
+      facets = @harness.find_automatic_facets("Buy $aapl now")
+      tag_facet = facets.find { |f| f["features"][0]["$type"] == "app.bsky.richtext.facet#tag" }
+
+      assert_equal "$AAPL", tag_facet["features"][0]["tag"]
+      assert_equal 4, tag_facet["index"]["byteStart"]
+      assert_equal 9, tag_facet["index"]["byteEnd"]
+    end
+
+    def test_detects_parenthesized_cashtag
+      facets = @harness.find_automatic_facets("Buy ($GOOG)")
+      tag_facet = facets.find { |f| f["features"][0]["$type"] == "app.bsky.richtext.facet#tag" }
+
+      assert_equal "$GOOG", tag_facet["features"][0]["tag"]
+      assert_equal 5, tag_facet["index"]["byteStart"]
+      assert_equal 10, tag_facet["index"]["byteEnd"]
+    end
+
+    def test_rejects_numeric_and_long_cashtags
+      facets = @harness.find_automatic_facets("$100 $ABC123 $TOOLONG")
+      tag_facets = facets.select { |f| f["features"][0]["$type"] == "app.bsky.richtext.facet#tag" }
+
+      assert_empty tag_facets
+    end
   end
 
   class PostToolsLinkTest < Minitest::Test
@@ -196,8 +283,7 @@ module Bskyrb
       link_facets = facets.select { |f| f["features"][0]["$type"] == "app.bsky.richtext.facet#link" }
 
       assert_equal 1, link_facets.length
-      # URI.normalize adds trailing slash to bare domains
-      assert link_facets[0]["features"][0]["uri"].start_with?("https://example.com")
+      assert_equal "https://example.com", link_facets[0]["features"][0]["uri"]
     end
 
     def test_detects_http_link
@@ -229,9 +315,27 @@ module Bskyrb
       facets = @harness.find_automatic_facets("Visit https://example.com.")
       link_facet = facets.find { |f| f["features"][0]["$type"] == "app.bsky.richtext.facet#link" }
 
-      assert_equal "https://example.com/", link_facet["features"][0]["uri"]
+      assert_equal "https://example.com", link_facet["features"][0]["uri"]
       assert_equal 6, link_facet["index"]["byteStart"]
       assert_equal 25, link_facet["index"]["byteEnd"]
+    end
+
+    def test_detects_bare_domain_link
+      facets = @harness.find_automatic_facets("Visit example.com today")
+      link_facet = facets.find { |f| f["features"][0]["$type"] == "app.bsky.richtext.facet#link" }
+
+      assert_equal "https://example.com", link_facet["features"][0]["uri"]
+      assert_equal 6, link_facet["index"]["byteStart"]
+      assert_equal 17, link_facet["index"]["byteEnd"]
+    end
+
+    def test_detects_bare_domain_with_path_query_and_fragment
+      facets = @harness.find_automatic_facets("Visit example.com/path?x=1#top now")
+      link_facet = facets.find { |f| f["features"][0]["$type"] == "app.bsky.richtext.facet#link" }
+
+      assert_equal "https://example.com/path?x=1#top", link_facet["features"][0]["uri"]
+      assert_equal 6, link_facet["index"]["byteStart"]
+      assert_equal 30, link_facet["index"]["byteEnd"]
     end
 
     def test_link_excludes_trailing_comma_after_query
@@ -241,6 +345,54 @@ module Bskyrb
       assert_equal "https://example.com/path?x=1&y=2", link_facet["features"][0]["uri"]
       assert_equal 5, link_facet["index"]["byteStart"]
       assert_equal 37, link_facet["index"]["byteEnd"]
+    end
+
+    def test_link_excludes_unmatched_trailing_parenthesis
+      facets = @harness.find_automatic_facets("Open (https://example.com)")
+      link_facet = facets.find { |f| f["features"][0]["$type"] == "app.bsky.richtext.facet#link" }
+
+      assert_equal "https://example.com", link_facet["features"][0]["uri"]
+      assert_equal 6, link_facet["index"]["byteStart"]
+      assert_equal 25, link_facet["index"]["byteEnd"]
+    end
+
+    def test_link_keeps_matched_trailing_parenthesis
+      facets = @harness.find_automatic_facets("Open https://example.com/thing_(cool)")
+      link_facet = facets.find { |f| f["features"][0]["$type"] == "app.bsky.richtext.facet#link" }
+
+      assert_equal "https://example.com/thing_(cool)", link_facet["features"][0]["uri"]
+      assert_equal 5, link_facet["index"]["byteStart"]
+      assert_equal 37, link_facet["index"]["byteEnd"]
+    end
+
+    def test_rejects_common_non_link_file_extensions
+      facets = @harness.find_automatic_facets("Images website.com.jpg and something-cool.jpg")
+      link_facets = facets.select { |f| f["features"][0]["$type"] == "app.bsky.richtext.facet#link" }
+
+      assert_empty link_facets
+    end
+
+    def test_rejects_common_non_link_file_extension_paths
+      facets = @harness.find_automatic_facets("Skip e.g./foo and website.com.jpg/foo")
+      link_facets = facets.select { |f| f["features"][0]["$type"] == "app.bsky.richtext.facet#link" }
+
+      assert_empty link_facets
+    end
+
+    def test_bare_link_excludes_trailing_colon
+      facets = @harness.find_automatic_facets("a trailing bsky.app: colon")
+      link_facet = facets.find { |f| f["features"][0]["$type"] == "app.bsky.richtext.facet#link" }
+
+      assert_equal "https://bsky.app", link_facet["features"][0]["uri"]
+      assert_equal 11, link_facet["index"]["byteStart"]
+      assert_equal 19, link_facet["index"]["byteEnd"]
+    end
+
+    def test_does_not_create_hashtag_inside_link_fragment
+      facets = @harness.find_automatic_facets("Visit https://example.com/path#section")
+      tag_facets = facets.select { |f| f["features"][0]["$type"] == "app.bsky.richtext.facet#tag" }
+
+      assert_empty tag_facets
     end
   end
 
@@ -336,6 +488,21 @@ module Bskyrb
       assert_equal 1, facets.length
       assert_equal "app.bsky.richtext.facet#link", facets[0]["features"][0]["$type"]
       assert_equal "https://example.com", facets[0]["features"][0]["uri"]
+    end
+
+    def test_manual_shortened_bare_domain_link_takes_priority_over_automatic
+      text = "Visit ticketmaster.com #music"
+      long_url = "https://www.ticketmaster.com/event/2D0062F0B9159486?brand=carolinahurricanes"
+      manual = @harness.create_link_facet(text, "ticketmaster.com", long_url)
+
+      facets = @harness.create_facets(text, manual_facets: [manual])
+      link_facets = facets.select { |f| f["features"][0]["$type"] == "app.bsky.richtext.facet#link" }
+      tag_facets = facets.select { |f| f["features"][0]["$type"] == "app.bsky.richtext.facet#tag" }
+
+      assert_equal 1, link_facets.length
+      assert_equal long_url, link_facets[0]["features"][0]["uri"]
+      assert_equal 1, tag_facets.length
+      assert_equal "music", tag_facets[0]["features"][0]["tag"]
     end
 
     def test_manual_link_facet_auto_position

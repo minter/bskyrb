@@ -149,13 +149,13 @@ Posts automatically handle rich text features:
 
 ```ruby
 # Mentions are automatically detected and linked
-bsky.create_post("Hello @username! How are you?")
+bsky.create_post("Hello @username.bsky.social! How are you?")
 
-# URLs are automatically detected and previewed
-bsky.create_post("Check out https://example.com")
+# URLs and bare domains are automatically detected and linked
+bsky.create_post("Check out example.com and https://example.org/path")
 
-# Hashtags are automatically detected
-bsky.create_post("Just posting about #ruby and #coding!")
+# Hashtags and cashtags are automatically detected
+bsky.create_post("Just posting about #ruby, #coding, and $AAPL")
 ```
 
 #### Manual Facets
@@ -263,6 +263,7 @@ The gem requires the following runtime dependencies:
 - nokogiri (>= 1.16.1) - For parsing HTML and extracting OpenGraph data
 - mini_mime (>= 1.1.2) - For handling MIME types
 - addressable (>= 2.8.1) - For improved URL handling
+- public_suffix (>= 5.0) - For validating rich text domains
 - mini_magick (>= 4.12.0) - For image processing and optimization
 - streamio-ffmpeg (>= 3.0.2) - For video processing
 
