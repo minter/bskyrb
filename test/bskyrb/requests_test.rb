@@ -9,7 +9,7 @@ module ATProto
 
     # Stub resolve_handle to avoid network calls
     def resolve_handle(_pds, username)
-      {"did" => "did:plc:fake#{username.gsub(".", "")}"}
+      {"did" => "did:plc:fake#{username.delete(".")}"}
     end
   end
 
@@ -65,6 +65,20 @@ module ATProto
     def test_get_followers_uri_encodes_cursor_with_special_chars
       uri = @utils.get_followers_uri("https://bsky.social", "user.bsky.social", "cursor+value/123")
       assert_includes uri, "cursor=cursor%2Bvalue%2F123"
+    end
+
+    def test_get_post_thread_uri_encodes_query_values
+      query = Struct.new(:uri, :depth).new("at://did:plc:abc123/app.bsky.feed.post/xyz 789", 10)
+
+      uri = @utils.get_post_thread_uri("https://bsky.social", query)
+
+      assert_equal "https://bsky.social/xrpc/app.bsky.feed.getPostThread?uri=at%3A%2F%2Fdid%3Aplc%3Aabc123%2Fapp.bsky.feed.post%2Fxyz+789&depth=10", uri
+    end
+
+    def test_query_obj_to_query_params_omits_nil_and_empty_values
+      query = Struct.new(:uri, :depth, :cursor, :filter).new("at://did:plc:abc123/app.bsky.feed.post/xyz", nil, "", [])
+
+      assert_equal "?uri=at%3A%2F%2Fdid%3Aplc%3Aabc123%2Fapp.bsky.feed.post%2Fxyz", @utils.query_obj_to_query_params(query)
     end
   end
 

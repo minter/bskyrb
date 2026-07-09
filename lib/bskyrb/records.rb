@@ -12,6 +12,8 @@ module Bskyrb
     # Job state constants for video processing
     JOB_STATE_COMPLETED = "JOB_STATE_COMPLETED"
     JOB_STATE_FAILED = "JOB_STATE_FAILED"
+    VIDEO_SERVICE_URL = "https://video.bsky.app"
+    VIDEO_SERVICE_DID = "did:web:video.bsky.app"
 
     def initialize(session)
       @session = session
@@ -19,9 +21,10 @@ module Bskyrb
     end
 
     def create_record(input)
+      request_body = normalize_request_body(input)
       HTTParty.post(
         create_record_uri(session.pds),
-        body: input.to_json,
+        body: request_body.to_json,
         headers: default_authenticated_headers(session)
       )
     end
@@ -78,7 +81,7 @@ module Bskyrb
 
     def upload_video_blob(file_path, content_type)
       # Check video file size (300MB limit, matching Bluesky's maximum)
-      max_video_size = 300 * 1024 * 1024  # 300MB in bytes
+      max_video_size = 300 * 1000 * 1000
       file_size = File.size(file_path)
 
       if file_size > max_video_size
@@ -87,29 +90,16 @@ module Bskyrb
 
       Bskyrb.logger.info("Uploading video: #{File.basename(file_path)} (#{(file_size / 1024.0 / 1024.0).round(2)}MB)")
 
-      video_service_url = "https://video.bsky.app"
-
       # Use the session's service endpoint as the audience DID
       # This is derived from the didDoc service endpoint in the session
       video_service_did = session.service_endpoint
 
-      auth_uri = get_service_auth_uri(session.pds, video_service_did, "com.atproto.repo.uploadBlob", (Time.now.to_i + 3600).to_s)
-
-      service_auth_response = HTTParty.get(
-        auth_uri,
-        headers: default_authenticated_headers(session)
-      )
-
-      unless service_auth_response&.success? && service_auth_response["token"]
-        Bskyrb.logger.error("Service auth failed: #{service_auth_response&.code} - #{service_auth_response&.message}")
-        raise "Failed to get service auth token: #{service_auth_response&.code} - #{service_auth_response&.message}"
-      end
-
-      video_token = service_auth_response["token"]
+      check_video_upload_limits!
+      video_token = service_auth_token(video_service_did, "com.atproto.repo.uploadBlob", Time.now.to_i + 1800)
 
       # Upload video and get job ID
       video_bytes = File.binread(file_path)
-      upload_url = upload_video_uri(video_service_url, session.did, File.basename(file_path))
+      upload_url = upload_video_uri(VIDEO_SERVICE_URL, session.did, File.basename(file_path))
 
       response = HTTParty.post(
         upload_url,
@@ -117,39 +107,20 @@ module Bskyrb
         headers: {"Authorization" => "Bearer #{video_token}", "Content-Type" => content_type, "Content-Length" => video_bytes.size.to_s}
       )
 
-      # Handle the case where video already exists (409 Conflict)
-      if response&.code == 409 && response["error"] == "already_exists" && response["state"] == JOB_STATE_COMPLETED && response["jobId"]
-        Bskyrb.logger.info("Video already exists, using existing job: #{response["jobId"]}")
-        job_status_response = HTTParty.get(
-          get_video_job_status_uri(video_service_url, response["jobId"]),
-          headers: {"Authorization" => "Bearer #{video_token}"}
-        )
+      upload_status = video_job_status(response)
+      return upload_status["blob"] if upload_status&.dig("blob")
 
-        unless job_status_response&.success?
-          raise "Failed to get job status for existing video: #{job_status_response&.code} - #{job_status_response&.message}"
-        end
-
-        unless job_status_response["jobStatus"]
-          raise "Invalid job status response format"
-        end
-
-        if job_status_response["jobStatus"]["state"] == JOB_STATE_COMPLETED
-          return job_status_response["jobStatus"]["blob"]
-        else
-          raise "Existing video job not in completed state: #{job_status_response["jobStatus"]["state"]}"
-        end
-      end
-
-      unless response&.success? && response["jobId"]
+      unless response&.success? && upload_status&.dig("jobId")
         # Check for specific error types
-        if response&.parsed_response&.dig("jobStatus", "error") == "unconfirmed_email"
+        if video_job_error(upload_status, response) == "unconfirmed_email"
           raise "Video upload failed: Bluesky account email not verified. Please check email and verify account before uploading videos."
         end
 
-        raise "Failed to upload video: #{response&.code} - #{response&.message}"
+        error_message = video_job_error(upload_status, response) || response&.message
+        raise "Failed to upload video: #{response&.code} - #{error_message}"
       end
 
-      job_id = response["jobId"]
+      job_id = upload_status["jobId"]
       Bskyrb.logger.info("Video upload started with job ID: #{job_id}")
 
       # Poll for job completion
@@ -159,7 +130,7 @@ module Bskyrb
 
       loop do
         job_status_response = HTTParty.get(
-          get_video_job_status_uri(video_service_url, job_id),
+          get_video_job_status_uri(VIDEO_SERVICE_URL, job_id),
           headers: {"Authorization" => "Bearer #{video_token}"}
         )
 
@@ -167,11 +138,12 @@ module Bskyrb
           raise "Failed to get job status: #{job_status_response&.code} - #{job_status_response&.message}"
         end
 
-        unless job_status_response["jobStatus"]
+        job_status = video_job_status(job_status_response)
+        unless job_status
           raise "Invalid job status response format"
         end
 
-        state = job_status_response["jobStatus"]["state"]
+        state = job_status["state"]
         Bskyrb.logger.debug("Video processing status: #{state}")
 
         break if [JOB_STATE_COMPLETED, JOB_STATE_FAILED].include?(state)
@@ -183,12 +155,96 @@ module Bskyrb
         sleep(5)
       end
 
-      if job_status_response["jobStatus"]["state"] == JOB_STATE_COMPLETED
+      job_status = video_job_status(job_status_response)
+      if job_status["state"] == JOB_STATE_COMPLETED
         Bskyrb.logger.info("Video processing completed successfully")
-        job_status_response["jobStatus"]["blob"]
+        job_status["blob"]
       else
-        raise "Video processing failed: #{job_status_response["jobStatus"]["state"]}"
+        raise "Video processing failed: #{job_status["state"]}"
       end
+    end
+
+    def normalize_request_body(input)
+      body = (input.respond_to?(:to_h) && !input.is_a?(Hash)) ? input.to_h : input
+      compact_nil_values(body)
+    end
+
+    def compact_nil_values(value)
+      case value
+      when Hash
+        value.each_with_object({}) do |(key, item), output|
+          compacted = compact_nil_values(item)
+          output[key] = compacted unless compacted.nil?
+        end
+      when Array
+        value.map { |item| compact_nil_values(item) }.compact
+      else
+        value
+      end
+    end
+
+    def service_auth_token(aud, lxm, exp = Time.now.to_i + 60)
+      auth_uri = get_service_auth_uri(session.pds, aud, lxm, exp.to_s)
+      service_auth_response = HTTParty.get(
+        auth_uri,
+        headers: default_authenticated_headers(session)
+      )
+
+      unless service_auth_response&.success? && service_auth_response["token"]
+        Bskyrb.logger.error("Service auth failed: #{service_auth_response&.code} - #{service_auth_response&.message}")
+        raise "Failed to get service auth token: #{service_auth_response&.code} - #{service_auth_response&.message}"
+      end
+
+      service_auth_response["token"]
+    end
+
+    def check_video_upload_limits!
+      response = video_upload_limits_response
+      return unless response
+
+      unless response&.success?
+        Bskyrb.logger.warn("Could not check video upload limits: #{response&.code} - #{response&.message}; proceeding with upload")
+        return
+      end
+
+      body = response_body_hash(response)
+      if body&.key?("canUpload")
+        return if body["canUpload"]
+
+        reason = body["message"] || body["error"] || "Video upload is not currently allowed for this account"
+        raise "Video upload unavailable: #{reason}"
+      end
+
+      Bskyrb.logger.warn("Video upload limits response did not include canUpload; proceeding with upload")
+    end
+
+    def video_upload_limits_response
+      limits_token = service_auth_token(VIDEO_SERVICE_DID, "app.bsky.video.getUploadLimits")
+      HTTParty.get(
+        get_video_upload_limits_uri(VIDEO_SERVICE_URL),
+        headers: {"Authorization" => "Bearer #{limits_token}"}
+      )
+    rescue => e
+      Bskyrb.logger.warn("Could not check video upload limits: #{e.message}; proceeding with upload")
+      nil
+    end
+
+    def video_job_status(response)
+      body = response_body_hash(response)
+      return body["jobStatus"] if body&.dig("jobStatus").is_a?(Hash)
+
+      body
+    end
+
+    def video_job_error(status, response)
+      status_error = status["error"] || status["message"] if status.is_a?(Hash)
+      body = response_body_hash(response)
+      status_error || body&.dig("jobStatus", "error") || body&.dig("error") || body&.dig("message")
+    end
+
+    def response_body_hash(response)
+      parsed_response = response&.parsed_response
+      parsed_response if parsed_response.is_a?(Hash)
     end
 
     def create_post_or_reply(text, reply_to: nil, embed_url: nil, embed_images: [], embed_video: nil, created_at: DateTime.now.iso8601(3), langs: ["en-US"], facets: [])
@@ -338,7 +394,7 @@ module Bskyrb
     def mute(username)
       HTTParty.post(
         mute_actor_uri(session.pds),
-        body: {actor: resolve_handle(session.pds, username)}.to_json,
+        body: {actor: resolve_handle(session.pds, username)["did"]}.to_json,
         headers: default_authenticated_headers(session)
       )
     end
@@ -401,7 +457,7 @@ module Bskyrb
     # Deletes a post by URL or PostView object
     def delete_post(post_or_url)
       post = post_or_url.is_a?(String) ? get_post_by_url(post_or_url) : post_or_url
-      raise ArgumentError, "Could not resolve post" unless post && post.uri
+      raise ArgumentError, "Could not resolve post" unless post&.uri
 
       # Parse AT URI: at://did/collection/rkey
       at_uri = post.uri

@@ -6,6 +6,7 @@ require "tempfile"
 require "mini_mime"
 require "addressable/uri"
 require "mini_magick"
+require "streamio-ffmpeg"
 
 module Bskyrb
   module PostTools
@@ -58,9 +59,10 @@ module Bskyrb
       # Find mentions
       text.enum_for(:scan, mention_pattern).each do |m|
         match_data = Regexp.last_match
-        index_start = text[0...match_data.begin(0)].bytesize
-        index_end = text[0...match_data.end(0)].bytesize
-        did = resolve_handle(@pds, m.join("").strip[1..-1])["did"]
+        mention_text = "#{m[1]}#{m[2]}"
+        index_start = text[0...match_data.begin(2)].bytesize
+        index_end = text[0...match_data.end(3)].bytesize
+        did = resolve_handle(@pds, mention_text[1..])["did"]
         unless did.nil?
           facets.push(
             "$type" => "app.bsky.richtext.facet",
@@ -84,14 +86,16 @@ module Bskyrb
         full_match = match_data[0]
         next if full_match.nil? || full_match.empty?
 
+        link_text = trim_trailing_link_punctuation(full_match)
+
         # Only process absolute URLs (starting with http:// or https://)
-        next unless full_match.start_with?("http://", "https://")
+        next unless link_text.start_with?("http://", "https://")
 
         index_start = text[0...match_data.begin(0)].bytesize
-        index_end = text[0...match_data.end(0)].bytesize
+        index_end = index_start + link_text.bytesize
 
         begin
-          uri = URI.parse(full_match)
+          uri = URI.parse(link_text)
           # Additional validation to ensure it's a proper URI
           next unless uri.is_a?(URI::HTTP) || uri.is_a?(URI::HTTPS)
           next if uri.host.nil? || uri.host.empty?
@@ -141,6 +145,10 @@ module Bskyrb
       end
 
       facets
+    end
+
+    def trim_trailing_link_punctuation(link_text)
+      link_text.sub(/[.,!?;:]+$/, "")
     end
 
     # Validate facets structure and content
@@ -404,7 +412,7 @@ module Bskyrb
 
     def upload_image(file, client)
       content_type = MiniMime.lookup_by_filename(file.path)&.content_type || "application/octet-stream"
-      
+
       # Bluesky image limits: 2MB per image and 4000x4000 pixels.
       # Target slightly under the byte limit to leave a safety buffer.
       max_size = 1950 * 1024 # ~1.95MB in bytes
@@ -416,7 +424,7 @@ module Bskyrb
         compressed_file = compress_image(file_path, max_size, max_dimension)
         file_path = compressed_file.path if compressed_file
       end
-      
+
       begin
         upload_response = client.upload_blob(file_path, content_type)
         return nil unless upload_response&.dig("blob")
@@ -462,59 +470,57 @@ module Bskyrb
     end
 
     def compress_image(file_path, max_size, max_dimension = 4000)
-      begin
-        # Create a temporary file for the compressed image
-        temp_file = Tempfile.new(["compressed", File.extname(file_path)])
+      # Create a temporary file for the compressed image
+      temp_file = Tempfile.new(["compressed", File.extname(file_path)])
 
-        # Start with high quality and reduce if needed
-        quality = 85
+      # Start with high quality and reduce if needed
+      quality = 85
 
-        # Try different quality levels until we get under the size limit.
-        # Each pass also constrains dimensions to max_dimension (the trailing
-        # ">" only shrinks images larger than the box, preserving aspect ratio).
-        loop do
-          image = MiniMagick::Image.open(file_path)
-          image.resize "#{max_dimension}x#{max_dimension}>"
-          image.format "jpeg" # Convert to JPEG for better compression
-          image.quality quality.to_s
-          image.write temp_file.path
+      # Try different quality levels until we get under the size limit.
+      # Each pass also constrains dimensions to max_dimension (the trailing
+      # ">" only shrinks images larger than the box, preserving aspect ratio).
+      loop do
+        image = MiniMagick::Image.open(file_path)
+        image.resize "#{max_dimension}x#{max_dimension}>"
+        image.format "jpeg" # Convert to JPEG for better compression
+        image.quality quality.to_s
+        image.write temp_file.path
 
-          current_size = File.size(temp_file.path)
-          Bskyrb.logger.debug("Compressed image size: #{current_size} bytes (quality: #{quality})")
+        current_size = File.size(temp_file.path)
+        Bskyrb.logger.debug("Compressed image size: #{current_size} bytes (quality: #{quality})")
 
-          # If we're under the limit or quality is too low, break
-          break if current_size <= max_size || quality <= 20
+        # If we're under the limit or quality is too low, break
+        break if current_size <= max_size || quality <= 20
 
-          # Reduce quality for next iteration
-          quality -= 15
-        end
-
-        # If still too large, try resizing
-        if File.size(temp_file.path) > max_size
-          Bskyrb.logger.debug("Still too large after quality reduction, trying resize...")
-          image = MiniMagick::Image.open(file_path)
-
-          # Resize to 80% of the dimension-capped size and try again
-          original_width = [image.width, max_dimension].min
-          original_height = [image.height, max_dimension].min
-          new_width = (original_width * 0.8).to_i
-          new_height = (original_height * 0.8).to_i
-
-          image.resize "#{new_width}x#{new_height}"
-          image.format "jpeg"
-          image.quality "75"
-          image.write temp_file.path
-
-          Bskyrb.logger.debug("Resized image size: #{File.size(temp_file.path)} bytes")
-        end
-
-        temp_file
-      rescue => e
-        Bskyrb.logger.error("Error compressing image: #{e.message}")
-        temp_file&.close
-        temp_file&.unlink
-        nil
+        # Reduce quality for next iteration
+        quality -= 15
       end
+
+      # If still too large, try resizing
+      if File.size(temp_file.path) > max_size
+        Bskyrb.logger.debug("Still too large after quality reduction, trying resize...")
+        image = MiniMagick::Image.open(file_path)
+
+        # Resize to 80% of the dimension-capped size and try again
+        original_width = [image.width, max_dimension].min
+        original_height = [image.height, max_dimension].min
+        new_width = (original_width * 0.8).to_i
+        new_height = (original_height * 0.8).to_i
+
+        image.resize "#{new_width}x#{new_height}"
+        image.format "jpeg"
+        image.quality "75"
+        image.write temp_file.path
+
+        Bskyrb.logger.debug("Resized image size: #{File.size(temp_file.path)} bytes")
+      end
+
+      temp_file
+    rescue => e
+      Bskyrb.logger.error("Error compressing image: #{e.message}")
+      temp_file&.close
+      temp_file&.unlink
+      nil
     end
 
     def upload_video(file_path, client)

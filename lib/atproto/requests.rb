@@ -13,11 +13,12 @@ module ATProto
     end
 
     def query_obj_to_query_params(q)
-      out = "?"
-      q.to_h.each do |key, value|
-        out += "#{key}=#{value}&" unless value.nil? || (value.class.method_defined?(:empty?) && value.empty?)
+      params = q.to_h.reject do |_key, value|
+        value.nil? || (value.class.method_defined?(:empty?) && value.empty?)
       end
-      out.slice(0...-1)
+      return "" if params.empty?
+
+      "?#{URI.encode_www_form(params)}"
     end
 
     def default_headers
@@ -68,8 +69,16 @@ module ATProto
       "#{pds}/xrpc/app.bsky.video.getJobStatus?jobId=#{URI.encode_www_form_component(job_id)}"
     end
 
+    def get_video_upload_limits_uri(pds)
+      "#{pds}/xrpc/app.bsky.video.getUploadLimits"
+    end
+
     def get_service_auth_uri(pds, aud, lxm, exp)
       "#{pds}/xrpc/com.atproto.server.getServiceAuth?aud=#{URI.encode_www_form_component(aud)}&lxm=#{URI.encode_www_form_component(lxm)}&exp=#{URI.encode_www_form_component(exp)}"
+    end
+
+    def resolve_did_uri(pds, did)
+      "#{pds}/xrpc/com.atproto.identity.resolveDid?did=#{URI.encode_www_form_component(did)}"
     end
 
     def get_profile_uri(pds, username)
