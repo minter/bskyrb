@@ -86,14 +86,16 @@ module Bskyrb
         full_match = match_data[0]
         next if full_match.nil? || full_match.empty?
 
+        link_text = trim_trailing_link_punctuation(full_match)
+
         # Only process absolute URLs (starting with http:// or https://)
-        next unless full_match.start_with?("http://", "https://")
+        next unless link_text.start_with?("http://", "https://")
 
         index_start = text[0...match_data.begin(0)].bytesize
-        index_end = text[0...match_data.end(0)].bytesize
+        index_end = index_start + link_text.bytesize
 
         begin
-          uri = URI.parse(full_match)
+          uri = URI.parse(link_text)
           # Additional validation to ensure it's a proper URI
           next unless uri.is_a?(URI::HTTP) || uri.is_a?(URI::HTTPS)
           next if uri.host.nil? || uri.host.empty?
@@ -143,6 +145,10 @@ module Bskyrb
       end
 
       facets
+    end
+
+    def trim_trailing_link_punctuation(link_text)
+      link_text.sub(/[.,!?;:]+$/, "")
     end
 
     # Validate facets structure and content

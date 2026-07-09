@@ -224,6 +224,24 @@ module Bskyrb
       assert_equal 6, link_facets[0]["index"]["byteStart"]
       assert_equal 25, link_facets[0]["index"]["byteEnd"]
     end
+
+    def test_link_excludes_trailing_sentence_period
+      facets = @harness.find_automatic_facets("Visit https://example.com.")
+      link_facet = facets.find { |f| f["features"][0]["$type"] == "app.bsky.richtext.facet#link" }
+
+      assert_equal "https://example.com/", link_facet["features"][0]["uri"]
+      assert_equal 6, link_facet["index"]["byteStart"]
+      assert_equal 25, link_facet["index"]["byteEnd"]
+    end
+
+    def test_link_excludes_trailing_comma_after_query
+      facets = @harness.find_automatic_facets("Open https://example.com/path?x=1&y=2, then continue")
+      link_facet = facets.find { |f| f["features"][0]["$type"] == "app.bsky.richtext.facet#link" }
+
+      assert_equal "https://example.com/path?x=1&y=2", link_facet["features"][0]["uri"]
+      assert_equal 5, link_facet["index"]["byteStart"]
+      assert_equal 37, link_facet["index"]["byteEnd"]
+    end
   end
 
   class PostToolsMentionTest < Minitest::Test

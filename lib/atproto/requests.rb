@@ -13,14 +13,12 @@ module ATProto
     end
 
     def query_obj_to_query_params(q)
-      out = "?"
-      q.to_h.each do |key, value|
-        next if value.nil?
-        next if value.class.method_defined?(:empty?) && value.empty?
-
-        out += "#{key}=#{value}&"
+      params = q.to_h.reject do |_key, value|
+        value.nil? || (value.class.method_defined?(:empty?) && value.empty?)
       end
-      out.slice(0...-1)
+      return "" if params.empty?
+
+      "?#{URI.encode_www_form(params)}"
     end
 
     def default_headers
