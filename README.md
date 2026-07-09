@@ -268,15 +268,31 @@ The gem requires the following runtime dependencies:
 
 ## Code generation
 
-We are working on a script to generate classes from the atproto lexicon. So far we have made non-query objects. To recreate them:
+Generated classes are built from the upstream ATProto lexicons in the `atproto` submodule. To initialize the submodule after cloning:
 
 ```
-git submodule add https://github.com/bluesky-social/atproto.git
-# or just clone it!
-bin/codegen
+git submodule update --init
 ```
 
-This crawls the lexicon directory in your newly-cloned atproto repo, and generates formatted classes based on the json schemas embedded in the files. You can then hydrate them like so:
+To update to newer upstream lexicons, advance the submodule and regenerate:
+
+```
+cd atproto
+git fetch origin main
+git switch --detach origin/main
+cd ..
+bin/codegen atproto
+```
+
+You can also pass a different checkout or lexicon directory:
+
+```
+bin/codegen /path/to/atproto
+bin/codegen /path/to/atproto/lexicons
+BSKYRB_LEXICONS=/path/to/atproto bin/codegen
+```
+
+This crawls the lexicon directory, generates formatted Ruby classes in `lib/bskyrb/generated_classes.rb`, and regenerates `sig/generated_classes.rbs`. The generated classes are shallow data wrappers: nested refs, unions, blobs, and unknown values remain raw hashes/values instead of being recursively hydrated. You can hydrate a top-level object like so:
 
 ```ruby
 # make your RecordManager, then...
@@ -315,7 +331,7 @@ my_post = Bskyrb::AppBskyFeedDefs::PostView.from_hash post_by_url["thread"]["pos
 Next steps:
 
 - Recursion--hydrate the classes embedded in the classes. Some parsing to enable this already happens in `LexiconParser`.
-- Generate classes for queries and other unusual object types.
+- Generate endpoint methods from query and procedure lexicons.
 - Integrate our new classes into the API call methods.
 
 ### Type checking

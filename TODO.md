@@ -17,20 +17,18 @@ Scope:
 Risk:
 - Medium. Mostly contained to `Bskyrb::PostTools`, but changes user-visible facets.
 
-## Lexicon and Codegen Cleanup
+## Generated Client Surface
 
-Bring the generated classes and endpoint surface closer to current ATProto lexicons.
+Build on the refreshed generated classes by making more of the ATProto endpoint surface available through generated or semi-generated client helpers.
 
 Scope:
-- Decide whether to patch targeted generated classes or modernize codegen first.
-- Add current fields commonly read by callers, such as `bookmarkCount`, `quoteCount`, `threadgate`, `bookmarked`, and `feedContext`.
-- Handle current video lexicons explicitly or generate them.
-- Prune or quarantine stale generated classes for removed endpoints such as `app.bsky.unspecced.getPopular`.
+- Decide whether endpoint helpers should be generated directly or wrapped in hand-written, higher-level APIs.
+- Keep generated classes shallow unless there is a clear caller need for recursive hydration.
+- Add generated endpoint tests around commonly used queries/procedures before exposing them as public API.
 - Consider a local audit script that compares current upstream lexicons with generated classes without making normal tests depend on network access.
 
 Risk:
-- Medium to high if regenerating everything.
-- Low to medium if patching targeted fields only.
+- Medium. The generated classes are current, but generated endpoint helpers could change public API expectations.
 
 ## Error Model Standardization
 
@@ -50,4 +48,4 @@ Risk:
 
 1. Error model standardization if reliability and observability are the priority.
 2. Rich-text parser parity if post fidelity is the priority.
-3. Lexicon/codegen cleanup if maintenance and future API drift are the priority.
+3. Generated client surface if maintenance and future API drift are the priority.
