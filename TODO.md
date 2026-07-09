@@ -29,7 +29,23 @@ Scope:
 Risk:
 - Medium to high. This touches public method behavior and dependent app expectations.
 
+## Client and Post Tool Modularization
+
+Split the current large `Client` and `PostTools` surfaces into smaller domain-focused modules or service objects while preserving the public API.
+
+Scope:
+- Split `PostTools` into clearer domains: rich text facets, external embeds, image embeds/uploads, video embeds, and post record helpers.
+- Extract Bluesky video upload handling from `Client#upload_video_blob` into a dedicated service that owns size checks, service auth, upload limits, polling, job parsing, and error translation.
+- Separate authenticated HTTP/session retry behavior from high-level client actions like posting, liking, following, timeline reads, deletes, and uploads.
+- Consider a post builder for `create_post_or_reply` so facets, replies, embeds, langs, and timestamps are composed in one focused object.
+- Keep compatibility by leaving existing public methods in place as delegators during the first pass.
+- Move endpoint URI helpers toward namespace-specific modules if they continue to grow.
+
+Risk:
+- Medium. The boundaries are clear, but the code is public API-adjacent and should be refactored with focused regression tests before changing behavior.
+
 ## Suggested Order
 
 1. Error model standardization if reliability and observability are the priority.
 2. Generated client surface if maintenance and future API drift are the priority.
+3. Client and post tool modularization if maintainability and test isolation are the priority.
