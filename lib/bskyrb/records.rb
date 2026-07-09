@@ -436,16 +436,8 @@ module Bskyrb
       nil
     end
 
-    def get_popular(n)
-      url = "#{session.pds}/xrpc/app.bsky.unspecced.getPopular?limit=#{n}"
-      res = authenticated_request(:get, url)
-      if res.success?
-        hydrate_feed(res, Bskyrb::AppBskyUnspeccedGetpopular::GetPopular::Output)
-      else
-        raise "API request failed: #{res.code} - #{res.message}"
-      end
-    rescue => e
-      Bskyrb.logger.error("Error fetching popular posts: #{e.message}")
+    def get_popular(_n)
+      Bskyrb.logger.warn("get_popular is deprecated: app.bsky.unspecced.getPopular is no longer available upstream")
       nil
     end
 

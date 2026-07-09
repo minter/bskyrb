@@ -660,6 +660,16 @@ module Bskyrb
       assert_requested like_stub
     end
 
+    def test_get_popular_is_deprecated_without_calling_removed_endpoint
+      session = create_session
+      popular_stub = stub_request(:get, /app\.bsky\.unspecced\.getPopular/)
+
+      client = Client.new(session)
+
+      assert_nil client.get_popular(10)
+      assert_not_requested popular_stub
+    end
+
     def test_create_reply_raises_when_parent_not_found
       session = create_session
 
