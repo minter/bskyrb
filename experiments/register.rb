@@ -39,7 +39,7 @@ handle = (gets || "").chomp
 print "What password do you want to use? "
 password = (gets || "").chomp
 print "And finally: What's your invite code? "
-inviteCode = (gets || "").chomp
+invite_code = (gets || "").chomp
 
 host = "https://bsky.social" if host.empty?
 host = "https://#{host}" unless host.start_with?("http")
@@ -47,11 +47,11 @@ headers = {
   "Content-Type" => "application/json"
 }
 body = {
-  handle: handle,
-  password: password,
-  email: email,
-  inviteCode: inviteCode,
-  recoveryKey: did
+  :handle => handle,
+  :password => password,
+  :email => email,
+  "inviteCode" => invite_code,
+  "recoveryKey" => did
 }.to_json
 response = HTTParty.post("#{host}/xrpc/com.atproto.server.createAccount", headers: headers, body: body)
 jres = JSON.parse(response.body)

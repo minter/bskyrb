@@ -9,7 +9,7 @@ module ATProto
 
     # Stub resolve_handle to avoid network calls
     def resolve_handle(_pds, username)
-      {"did" => "did:plc:fake#{username.gsub(".", "")}"}
+      {"did" => "did:plc:fake#{username.delete(".")}"}
     end
   end
 

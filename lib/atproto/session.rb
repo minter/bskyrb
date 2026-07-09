@@ -36,7 +36,7 @@ module ATProto
       @access_token = response["accessJwt"]
       @refresh_token = response["refreshJwt"]
       @did = response["did"]
-      @service_endpoint = "did:web:#{URI.parse(response["didDoc"]["service"][0]["serviceEndpoint"]).host}"
+      @service_endpoint = service_endpoint_for(response["didDoc"])
     end
 
     def refresh!
@@ -66,6 +66,38 @@ module ATProto
       else
         raise UnauthorizedError
       end
+    end
+
+    private
+
+    def service_endpoint_for(did_doc)
+      endpoint = did_doc_service_endpoint(did_doc) || did_doc_service_endpoint(resolve_did_doc)
+      endpoint_host = endpoint && URI.parse(endpoint).host
+      "did:web:#{endpoint_host || URI.parse(pds).host}"
+    rescue URI::InvalidURIError
+      "did:web:#{URI.parse(pds).host}"
+    end
+
+    def did_doc_service_endpoint(did_doc)
+      services = Array(did_doc&.dig("service")).select { |service| service.is_a?(Hash) }
+      service = services.find { |item| atproto_pds_service?(item) } || services.first
+      service&.dig("serviceEndpoint")
+    end
+
+    def atproto_pds_service?(service)
+      service["id"].to_s.end_with?("#atproto_pds") || service["type"] == "AtprotoPersonalDataServer"
+    end
+
+    def resolve_did_doc
+      return nil unless did
+
+      response = HTTParty.get(
+        URI(resolve_did_uri(pds, did)),
+        headers: default_headers
+      )
+      response["didDoc"] if response&.success? && response["didDoc"]
+    rescue
+      nil
     end
   end
 end

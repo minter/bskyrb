@@ -28,6 +28,36 @@ module Bskyrb
       ATProto::Session.new(credentials)
     end
 
+    def stub_video_service_auth
+      stub_request(:get, /com\.atproto\.server\.getServiceAuth.*app\.bsky\.video\.getUploadLimits/)
+        .to_return(status: 200, body: {"token" => "LIMITS_TOKEN"}.to_json, headers: {"Content-Type" => "application/json"})
+
+      stub_request(:get, "https://video.bsky.app/xrpc/app.bsky.video.getUploadLimits")
+        .to_return(status: 200, body: {"canUpload" => true}.to_json, headers: {"Content-Type" => "application/json"})
+
+      stub_request(:get, /com\.atproto\.server\.getServiceAuth.*com\.atproto\.repo\.uploadBlob/)
+        .to_return(status: 200, body: {"token" => "UPLOAD_TOKEN"}.to_json, headers: {"Content-Type" => "application/json"})
+    end
+
+    def with_temp_video
+      tempfile = Tempfile.new(["test-video", ".mp4"])
+      tempfile.binmode
+      tempfile.write("fake video data")
+      tempfile.close
+      yield tempfile.path
+    ensure
+      tempfile&.unlink
+    end
+
+    def video_blob
+      {
+        "$type" => "blob",
+        "ref" => {"$link" => "bafkvideo"},
+        "mimeType" => "video/mp4",
+        "size" => 1234
+      }
+    end
+
     def test_delete_post_parses_at_uri_correctly
       session = create_session
 
@@ -116,6 +146,26 @@ module Bskyrb
       assert_requested resolve_stub
     end
 
+    def test_mute_sends_actor_as_resolved_did_string
+      session = create_session
+
+      stub_request(:get, "https://bsky.social/xrpc/com.atproto.identity.resolveHandle?handle=spammer.bsky.social")
+        .to_return(
+          status: 200,
+          headers: {"Content-Type" => "application/json"},
+          body: {"did" => "did:plc:spammer123"}.to_json
+        )
+
+      mute_stub = stub_request(:post, "https://bsky.social/xrpc/app.bsky.graph.muteActor")
+        .with { |request| JSON.parse(request.body) == {"actor" => "did:plc:spammer123"} }
+        .to_return(status: 200, body: "{}".to_json, headers: {"Content-Type" => "application/json"})
+
+      client = Client.new(session)
+      client.mute("spammer.bsky.social")
+
+      assert_requested mute_stub
+    end
+
     def test_upload_blob_returns_response_on_success
       session = create_session
 
@@ -165,6 +215,148 @@ module Bskyrb
         assert_nil result
       ensure
         tempfile.unlink
+      end
+    end
+
+    def test_upload_video_blob_accepts_top_level_job_status_response
+      session = create_session
+      stub_video_service_auth
+
+      stub_request(:post, /app\.bsky\.video\.uploadVideo/)
+        .to_return(
+          status: 200,
+          headers: {"Content-Type" => "application/json"},
+          body: {"jobId" => "job123", "state" => "JOB_STATE_PROCESSING"}.to_json
+        )
+
+      stub_request(:get, "https://video.bsky.app/xrpc/app.bsky.video.getJobStatus?jobId=job123")
+        .to_return(
+          status: 200,
+          headers: {"Content-Type" => "application/json"},
+          body: {"jobStatus" => {"jobId" => "job123", "state" => "JOB_STATE_COMPLETED", "blob" => video_blob}}.to_json
+        )
+
+      client = Client.new(session)
+
+      with_temp_video do |path|
+        result = client.upload_video_blob(path, "video/mp4")
+        assert_equal "bafkvideo", result["ref"]["$link"]
+      end
+    end
+
+    def test_upload_video_blob_accepts_wrapped_upload_response
+      session = create_session
+      stub_video_service_auth
+
+      stub_request(:post, /app\.bsky\.video\.uploadVideo/)
+        .to_return(
+          status: 200,
+          headers: {"Content-Type" => "application/json"},
+          body: {"jobStatus" => {"jobId" => "job456", "state" => "JOB_STATE_PROCESSING"}}.to_json
+        )
+
+      stub_request(:get, "https://video.bsky.app/xrpc/app.bsky.video.getJobStatus?jobId=job456")
+        .to_return(
+          status: 200,
+          headers: {"Content-Type" => "application/json"},
+          body: {"jobStatus" => {"jobId" => "job456", "state" => "JOB_STATE_COMPLETED", "blob" => video_blob}}.to_json
+        )
+
+      client = Client.new(session)
+
+      with_temp_video do |path|
+        result = client.upload_video_blob(path, "video/mp4")
+        assert_equal "bafkvideo", result["ref"]["$link"]
+      end
+    end
+
+    def test_upload_video_blob_returns_already_processed_blob
+      session = create_session
+      stub_video_service_auth
+
+      stub_request(:post, /app\.bsky\.video\.uploadVideo/)
+        .to_return(
+          status: 409,
+          headers: {"Content-Type" => "application/json"},
+          body: {"error" => "already_exists", "blob" => video_blob}.to_json
+        )
+
+      client = Client.new(session)
+
+      with_temp_video do |path|
+        result = client.upload_video_blob(path, "video/mp4")
+        assert_equal "bafkvideo", result["ref"]["$link"]
+      end
+    end
+
+    def test_upload_video_blob_raises_when_upload_limits_disallow_upload
+      session = create_session
+
+      stub_request(:get, /com\.atproto\.server\.getServiceAuth.*app\.bsky\.video\.getUploadLimits/)
+        .to_return(status: 200, body: {"token" => "LIMITS_TOKEN"}.to_json, headers: {"Content-Type" => "application/json"})
+
+      stub_request(:get, "https://video.bsky.app/xrpc/app.bsky.video.getUploadLimits")
+        .to_return(status: 200, body: {"canUpload" => false, "message" => "daily limit reached"}.to_json, headers: {"Content-Type" => "application/json"})
+
+      client = Client.new(session)
+
+      with_temp_video do |path|
+        error = assert_raises(RuntimeError) do
+          client.upload_video_blob(path, "video/mp4")
+        end
+        assert_match(/daily limit reached/, error.message)
+      end
+    end
+
+    def test_upload_video_blob_proceeds_when_upload_limits_check_fails
+      session = create_session
+
+      stub_request(:get, /com\.atproto\.server\.getServiceAuth.*app\.bsky\.video\.getUploadLimits/)
+        .to_return(status: 503, body: {"error" => "Unavailable"}.to_json, headers: {"Content-Type" => "application/json"})
+
+      stub_request(:get, /com\.atproto\.server\.getServiceAuth.*com\.atproto\.repo\.uploadBlob/)
+        .to_return(status: 200, body: {"token" => "UPLOAD_TOKEN"}.to_json, headers: {"Content-Type" => "application/json"})
+
+      stub_request(:post, /app\.bsky\.video\.uploadVideo/)
+        .to_return(
+          status: 200,
+          headers: {"Content-Type" => "application/json"},
+          body: {"jobStatus" => {"jobId" => "job789", "state" => "JOB_STATE_PROCESSING"}}.to_json
+        )
+
+      stub_request(:get, "https://video.bsky.app/xrpc/app.bsky.video.getJobStatus?jobId=job789")
+        .to_return(
+          status: 200,
+          headers: {"Content-Type" => "application/json"},
+          body: {"jobStatus" => {"jobId" => "job789", "state" => "JOB_STATE_COMPLETED", "blob" => video_blob}}.to_json
+        )
+
+      client = Client.new(session)
+
+      with_temp_video do |path|
+        result = client.upload_video_blob(path, "video/mp4")
+        assert_equal "bafkvideo", result["ref"]["$link"]
+      end
+    end
+
+    def test_upload_video_blob_reports_non_json_upload_errors
+      session = create_session
+      stub_video_service_auth
+
+      stub_request(:post, /app\.bsky\.video\.uploadVideo/)
+        .to_return(
+          status: 500,
+          headers: {"Content-Type" => "text/plain"},
+          body: "upstream error"
+        )
+
+      client = Client.new(session)
+
+      with_temp_video do |path|
+        error = assert_raises(RuntimeError) do
+          client.upload_video_blob(path, "video/mp4")
+        end
+        assert_match(/Failed to upload video: 500/, error.message)
       end
     end
 
@@ -237,6 +429,50 @@ module Bskyrb
       client.create_post("Hello #ruby")
 
       assert_requested create_stub
+    end
+
+    def test_follow_serializes_generated_create_record_input_as_json
+      session = create_session
+
+      stub_request(:get, "https://bsky.social/xrpc/com.atproto.identity.resolveHandle?handle=friend.bsky.social")
+        .to_return(status: 200, headers: {"Content-Type" => "application/json"}, body: {"did" => "did:plc:friend123"}.to_json)
+
+      follow_stub = stub_request(:post, "https://bsky.social/xrpc/com.atproto.repo.createRecord")
+        .with { |request|
+          body = JSON.parse(request.body)
+          body["collection"] == "app.bsky.graph.follow" &&
+            body["repo"] == "did:plc:testuser123" &&
+            body["record"]["subject"] == "did:plc:friend123" &&
+            body["record"]["$type"] == "app.bsky.graph.follow" &&
+            !body.key?("rkey")
+        }
+        .to_return(status: 200, body: '{"uri": "at://test"}', headers: {"Content-Type" => "application/json"})
+
+      client = Client.new(session)
+      client.follow("friend.bsky.social")
+
+      assert_requested follow_stub
+    end
+
+    def test_block_serializes_generated_create_record_input_as_json
+      session = create_session
+
+      stub_request(:get, "https://bsky.social/xrpc/com.atproto.identity.resolveHandle?handle=blocked.bsky.social")
+        .to_return(status: 200, headers: {"Content-Type" => "application/json"}, body: {"did" => "did:plc:blocked123"}.to_json)
+
+      block_stub = stub_request(:post, "https://bsky.social/xrpc/com.atproto.repo.createRecord")
+        .with { |request|
+          body = JSON.parse(request.body)
+          body["collection"] == "app.bsky.graph.block" &&
+            body["record"]["subject"] == "did:plc:blocked123" &&
+            body["record"]["$type"] == "app.bsky.graph.block"
+        }
+        .to_return(status: 200, body: '{"uri": "at://test"}', headers: {"Content-Type" => "application/json"})
+
+      client = Client.new(session)
+      client.block("blocked.bsky.social")
+
+      assert_requested block_stub
     end
 
     def test_like_raises_when_post_not_found

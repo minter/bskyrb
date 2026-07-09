@@ -19,7 +19,7 @@ module Bskyrb
 
     # Stub resolve_handle to avoid network calls
     def resolve_handle(_pds, username)
-      {"did" => "did:plc:fake#{username.gsub(".", "")}"}
+      {"did" => "did:plc:fake#{username.delete(".")}"}
     end
 
     def create_test_image_embed(embed_images)
@@ -46,6 +46,10 @@ module Bskyrb
   class PostToolsImageEmbedTest < Minitest::Test
     def setup
       @harness = PostToolsTestHarness.new
+    end
+
+    def test_streamio_ffmpeg_is_loaded_for_standalone_video_aspect_ratio
+      assert defined?(FFMPEG)
     end
 
     def test_uses_images_embed_for_four_photos
@@ -235,11 +239,27 @@ module Bskyrb
       assert_equal "did:plc:fakeuserbskysocial", mention_facets[0]["features"][0]["did"]
     end
 
+    def test_mention_byte_positions_exclude_leading_space
+      facets = @harness.find_automatic_facets("Hello @user.bsky.social")
+      mention_facet = facets.find { |f| f["features"][0]["$type"] == "app.bsky.richtext.facet#mention" }
+
+      assert_equal 6, mention_facet["index"]["byteStart"]
+      assert_equal 23, mention_facet["index"]["byteEnd"]
+    end
+
     def test_detects_mention_after_parenthesis
       facets = @harness.find_automatic_facets("(cc @user.bsky.social)")
       mention_facets = facets.select { |f| f["features"][0]["$type"] == "app.bsky.richtext.facet#mention" }
 
       assert_equal 1, mention_facets.length
+    end
+
+    def test_mention_byte_positions_exclude_leading_parenthesis
+      facets = @harness.find_automatic_facets("(cc @user.bsky.social)")
+      mention_facet = facets.find { |f| f["features"][0]["$type"] == "app.bsky.richtext.facet#mention" }
+
+      assert_equal 4, mention_facet["index"]["byteStart"]
+      assert_equal 21, mention_facet["index"]["byteEnd"]
     end
   end
 
