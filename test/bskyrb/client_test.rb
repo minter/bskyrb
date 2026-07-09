@@ -58,6 +58,19 @@ module Bskyrb
       }
     end
 
+    def stub_refresh_session(access_token: "NEW_ACCESS_JWT", refresh_token: "NEW_REFRESH_JWT")
+      stub_request(:post, "https://bsky.social/xrpc/com.atproto.server.refreshSession")
+        .with(headers: {"Authorization" => "Bearer REFRESH_JWT"})
+        .to_return(
+          status: 200,
+          headers: {"Content-Type" => "application/json"},
+          body: {
+            "accessJwt" => access_token,
+            "refreshJwt" => refresh_token
+          }.to_json
+        )
+    end
+
     def test_delete_post_parses_at_uri_correctly
       session = create_session
 
@@ -166,6 +179,49 @@ module Bskyrb
       assert_requested mute_stub
     end
 
+    def test_create_record_refreshes_session_once_after_unauthorized_response
+      session = create_session
+      refresh_stub = stub_refresh_session
+
+      create_attempts = []
+      create_stub = stub_request(:post, "https://bsky.social/xrpc/com.atproto.repo.createRecord")
+        .to_return { |request|
+          create_attempts << request.headers["Authorization"]
+          if request.headers["Authorization"] == "Bearer ACCESS_JWT"
+            {status: 401, body: {"error" => "ExpiredToken"}.to_json, headers: {"Content-Type" => "application/json"}}
+          else
+            {status: 200, body: {"uri" => "at://test"}.to_json, headers: {"Content-Type" => "application/json"}}
+          end
+        }
+
+      client = Client.new(session)
+      response = client.create_record({"repo" => session.did, "collection" => "app.bsky.feed.post", "record" => {"text" => "hello"}})
+
+      assert response.success?
+      assert_equal "NEW_ACCESS_JWT", session.access_token
+      assert_equal "NEW_REFRESH_JWT", session.refresh_token
+      assert_equal ["Bearer ACCESS_JWT", "Bearer NEW_ACCESS_JWT"], create_attempts
+      assert_requested refresh_stub
+      assert_requested create_stub, times: 2
+    end
+
+    def test_authenticated_request_does_not_retry_more_than_once_after_refresh
+      session = create_session
+      stub_refresh_session
+
+      create_stub = stub_request(:post, "https://bsky.social/xrpc/com.atproto.repo.createRecord")
+        .to_return(
+          {status: 401, body: {"error" => "ExpiredToken"}.to_json, headers: {"Content-Type" => "application/json"}},
+          {status: 401, body: {"error" => "ExpiredToken"}.to_json, headers: {"Content-Type" => "application/json"}}
+        )
+
+      client = Client.new(session)
+      response = client.create_record({"repo" => session.did, "collection" => "app.bsky.feed.post", "record" => {"text" => "hello"}})
+
+      assert_equal 401, response.code
+      assert_requested create_stub, times: 2
+    end
+
     def test_upload_blob_returns_response_on_success
       session = create_session
 
@@ -242,6 +298,53 @@ module Bskyrb
         result = client.upload_video_blob(path, "video/mp4")
         assert_equal "bafkvideo", result["ref"]["$link"]
       end
+    end
+
+    def test_upload_video_blob_refreshes_session_for_service_auth
+      session = create_session
+      refresh_stub = stub_refresh_session
+
+      stub_request(:get, /com\.atproto\.server\.getServiceAuth.*app\.bsky\.video\.getUploadLimits/)
+        .to_return(status: 200, body: {"token" => "LIMITS_TOKEN"}.to_json, headers: {"Content-Type" => "application/json"})
+
+      stub_request(:get, "https://video.bsky.app/xrpc/app.bsky.video.getUploadLimits")
+        .to_return(status: 200, body: {"canUpload" => true}.to_json, headers: {"Content-Type" => "application/json"})
+
+      service_auth_attempts = []
+      service_auth_stub = stub_request(:get, /com\.atproto\.server\.getServiceAuth.*com\.atproto\.repo\.uploadBlob/)
+        .to_return { |request|
+          service_auth_attempts << request.headers["Authorization"]
+          if request.headers["Authorization"] == "Bearer ACCESS_JWT"
+            {status: 401, body: {"error" => "ExpiredToken"}.to_json, headers: {"Content-Type" => "application/json"}}
+          else
+            {status: 200, body: {"token" => "UPLOAD_TOKEN"}.to_json, headers: {"Content-Type" => "application/json"}}
+          end
+        }
+
+      stub_request(:post, /app\.bsky\.video\.uploadVideo/)
+        .to_return(
+          status: 200,
+          headers: {"Content-Type" => "application/json"},
+          body: {"jobStatus" => {"jobId" => "job-with-refresh", "state" => "JOB_STATE_PROCESSING"}}.to_json
+        )
+
+      stub_request(:get, "https://video.bsky.app/xrpc/app.bsky.video.getJobStatus?jobId=job-with-refresh")
+        .to_return(
+          status: 200,
+          headers: {"Content-Type" => "application/json"},
+          body: {"jobStatus" => {"jobId" => "job-with-refresh", "state" => "JOB_STATE_COMPLETED", "blob" => video_blob}}.to_json
+        )
+
+      client = Client.new(session)
+
+      with_temp_video do |path|
+        result = client.upload_video_blob(path, "video/mp4")
+        assert_equal "bafkvideo", result["ref"]["$link"]
+      end
+
+      assert_requested refresh_stub
+      assert_equal ["Bearer ACCESS_JWT", "Bearer NEW_ACCESS_JWT"], service_auth_attempts
+      assert_requested service_auth_stub, times: 2
     end
 
     def test_upload_video_blob_accepts_wrapped_upload_response

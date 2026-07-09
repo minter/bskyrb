@@ -22,10 +22,10 @@ module Bskyrb
 
     def create_record(input)
       request_body = normalize_request_body(input)
-      HTTParty.post(
+      authenticated_request(
+        :post,
         create_record_uri(session.pds),
-        body: request_body.to_json,
-        headers: default_authenticated_headers(session)
+        body: request_body.to_json
       )
     end
 
@@ -38,9 +38,9 @@ module Bskyrb
 
       full_uri = get_post_thread_uri(session.pds, query)
 
-      res = HTTParty.get(
-        full_uri,
-        headers: default_authenticated_headers(session)
+      res = authenticated_request(
+        :get,
+        full_uri
       )
 
       if res.success?
@@ -62,10 +62,11 @@ module Bskyrb
       # This method just reads and uploads the bytes as-is.
       image_bytes = File.binread(blob_path)
 
-      response = HTTParty.post(
+      response = authenticated_request(
+        :post,
         upload_blob_uri(session.pds),
         body: image_bytes,
-        headers: default_authenticated_headers(session).merge("Content-Type" => content_type)
+        headers: {"Content-Type" => content_type}
       )
 
       if response.success?
@@ -185,10 +186,7 @@ module Bskyrb
 
     def service_auth_token(aud, lxm, exp = Time.now.to_i + 60)
       auth_uri = get_service_auth_uri(session.pds, aud, lxm, exp.to_s)
-      service_auth_response = HTTParty.get(
-        auth_uri,
-        headers: default_authenticated_headers(session)
-      )
+      service_auth_response = authenticated_request(:get, auth_uri)
 
       unless service_auth_response&.success? && service_auth_response["token"]
         Bskyrb.logger.error("Service auth failed: #{service_auth_response&.code} - #{service_auth_response&.message}")
@@ -245,6 +243,23 @@ module Bskyrb
     def response_body_hash(response)
       parsed_response = response&.parsed_response
       parsed_response if parsed_response.is_a?(Hash)
+    end
+
+    def authenticated_request(method, uri, headers: {}, retry_on_unauthorized: true, **options)
+      response = HTTParty.public_send(
+        method,
+        uri,
+        **options.merge(headers: default_authenticated_headers(session).merge(headers))
+      )
+      return response unless retry_on_unauthorized && response&.code == 401
+
+      Bskyrb.logger.info("Refreshing ATProto session after authenticated request returned 401")
+      session.refresh!
+      HTTParty.public_send(
+        method,
+        uri,
+        **options.merge(headers: default_authenticated_headers(session).merge(headers))
+      )
     end
 
     def create_post_or_reply(text, reply_to: nil, embed_url: nil, embed_images: [], embed_video: nil, created_at: DateTime.now.iso8601(3), langs: ["en-US"], facets: [])
@@ -316,17 +331,11 @@ module Bskyrb
     end
 
     def get_profile(username)
-      HTTParty.get(
-        get_profile_uri(session.pds, username),
-        headers: default_authenticated_headers(session)
-      )
+      authenticated_request(:get, get_profile_uri(session.pds, username))
     end
 
     def get_followers(username, cursor: nil)
-      HTTParty.get(
-        get_followers_uri(session.pds, username, cursor),
-        headers: default_authenticated_headers(session)
-      )
+      authenticated_request(:get, get_followers_uri(session.pds, username, cursor))
     end
 
     def get_post_thread(post_url, depth = 10)
@@ -336,10 +345,7 @@ module Bskyrb
         q.depth = depth
       end
 
-      HTTParty.get(
-        get_post_thread_uri(session.pds, query),
-        headers: default_authenticated_headers(session)
-      )
+      authenticated_request(:get, get_post_thread_uri(session.pds, query))
     end
 
     def profile_action(username, type)
@@ -392,10 +398,10 @@ module Bskyrb
     end
 
     def mute(username)
-      HTTParty.post(
+      authenticated_request(
+        :post,
         mute_actor_uri(session.pds),
-        body: {actor: resolve_handle(session.pds, username)["did"]}.to_json,
-        headers: default_authenticated_headers(session)
+        body: {actor: resolve_handle(session.pds, username)["did"]}.to_json
       )
     end
 
@@ -406,7 +412,7 @@ module Bskyrb
 
     def get_latest_n_posts(username, n)
       url = "#{session.pds}/xrpc/app.bsky.feed.getAuthorFeed?actor=#{username}&limit=#{n}"
-      res = HTTParty.get(url, headers: default_authenticated_headers(session))
+      res = authenticated_request(:get, url)
       if res.success?
         hydrate_feed(res, Bskyrb::AppBskyFeedGetauthorfeed::GetAuthorFeed::Output)
       else
@@ -419,7 +425,7 @@ module Bskyrb
 
     def get_skyline(n)
       url = "#{session.pds}/xrpc/app.bsky.feed.getTimeline?limit=#{n}"
-      res = HTTParty.get(url, headers: default_authenticated_headers(session))
+      res = authenticated_request(:get, url)
       if res.success?
         hydrate_feed(res, Bskyrb::AppBskyFeedGettimeline::GetTimeline::Output)
       else
@@ -432,7 +438,7 @@ module Bskyrb
 
     def get_popular(n)
       url = "#{session.pds}/xrpc/app.bsky.unspecced.getPopular?limit=#{n}"
-      res = HTTParty.get(url, headers: default_authenticated_headers(session))
+      res = authenticated_request(:get, url)
       if res.success?
         hydrate_feed(res, Bskyrb::AppBskyUnspeccedGetpopular::GetPopular::Output)
       else
@@ -473,10 +479,10 @@ module Bskyrb
         "rkey" => rkey
       }
 
-      res = HTTParty.post(
+      res = authenticated_request(
+        :post,
         delete_record_uri(session.pds),
-        body: input.to_json,
-        headers: default_authenticated_headers(session)
+        body: input.to_json
       )
       if res.success?
         res
