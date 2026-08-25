@@ -126,7 +126,7 @@ module Bskyrb
 
       # Poll for job completion
       start_time = Time.now
-      timeout = 300  # 5 minutes timeout
+      timeout = 900  # 15 minutes, to allow processing of maximum-length (10 minute) videos
       job_status_response = nil
 
       loop do

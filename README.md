@@ -142,6 +142,7 @@ Images are automatically optimized to fit Bluesky's limits:
 
 Videos are validated before upload:
 - Maximum size is enforced (300MB)
+- Processing is polled for up to 15 minutes, enough for maximum-length (10 minute) videos
 
 ### Rich Text Features
 

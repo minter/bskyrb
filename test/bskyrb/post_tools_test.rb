@@ -278,6 +278,25 @@ module Bskyrb
       @harness = PostToolsTestHarness.new
     end
 
+    # Regression test: public_suffix reads its suffix list with the locale
+    # encoding, which raised Encoding::CompatibilityError under C/POSIX locales
+    # until bskyrb started preloading the list as UTF-8. Runs in a subprocess
+    # because the default external encoding is fixed at process boot.
+    def test_link_detection_works_under_posix_locale
+      script = 'require "bskyrb"; require "atproto/requests"; ' \
+        "h = Class.new { include ATProto::RequestUtils; include Bskyrb::PostTools }.new; " \
+        'exit(h.send(:valid_facet_domain?, "example.com") ? 0 : 1)'
+      output = IO.popen(
+        {"LANG" => nil, "LC_ALL" => "C", "RUBYOPT" => "-Ilib"},
+        [RbConfig.ruby, "-e", script],
+        err: [:child, :out],
+        chdir: File.expand_path("../..", __dir__),
+        &:read
+      )
+
+      assert $?.success?, "expected valid_facet_domain? to succeed under LC_ALL=C, got: #{output}"
+    end
+
     def test_detects_https_link
       facets = @harness.find_automatic_facets("Visit https://example.com today")
       link_facets = facets.select { |f| f["features"][0]["$type"] == "app.bsky.richtext.facet#link" }

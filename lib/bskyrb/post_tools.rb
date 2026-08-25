@@ -7,6 +7,14 @@ require "mini_mime"
 require "addressable/uri"
 require "mini_magick"
 require "public_suffix"
+
+# public_suffix (through at least 7.0.5) reads its suffix list with the process
+# locale's encoding, raising Encoding::CompatibilityError under C/POSIX locales
+# (common for cron jobs and containers). Preload the list as UTF-8 instead.
+# Upstream fix: https://github.com/weppos/publicsuffix-ruby/issues/118
+PublicSuffix::List.default = PublicSuffix::List.parse(
+  File.read(PublicSuffix::List::DEFAULT_LIST_PATH, encoding: Encoding::UTF_8)
+)
 require "streamio-ffmpeg"
 
 module Bskyrb
