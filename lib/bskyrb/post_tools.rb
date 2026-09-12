@@ -362,8 +362,22 @@ module Bskyrb
           "description" => og_data[:description] || ""
         }
       }
-      embed_data["external"]["thumb"] = get_image_blob(og_data[:image], client) if og_data[:image]
+      thumb = external_thumb_blob(embed_url, og_data[:image], client)
+      embed_data["external"]["thumb"] = thumb if thumb
       embed_data
+    end
+
+    # og:image is often a relative path (piped.video serves "/img/icons/..."),
+    # which get_image_blob would otherwise treat as a local file. Resolve it
+    # against the page URL, and never let a bad thumbnail sink the whole post.
+    def external_thumb_blob(page_url, og_image, client)
+      return nil if og_image.nil? || og_image.strip.empty?
+
+      image_url = Addressable::URI.join(page_url, og_image.strip).normalize.to_s
+      get_image_blob(image_url, client)
+    rescue => e
+      Bskyrb.logger.warn("Skipping external embed thumbnail #{og_image.inspect} for #{page_url}: #{e.message}")
+      nil
     end
 
     def create_image_embed(embed_images, client)

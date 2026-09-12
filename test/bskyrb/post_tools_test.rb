@@ -26,7 +26,14 @@ module Bskyrb
       create_image_embed(embed_images, self)
     end
 
+    def create_test_external_embed(embed_url)
+      create_external_embed(embed_url, self)
+    end
+
+    attr_accessor :fail_uploads
+
     def get_image_upload_metadata(image, _client)
+      raise Errno::ENOENT, image.to_s if fail_uploads
       @uploaded_images << image
       {
         "image" => {
@@ -687,6 +694,50 @@ module Bskyrb
 
       result = @harness.validate_facets(facets)
       assert_equal 0, result.length
+    end
+  end
+end
+
+module Bskyrb
+  class PostToolsExternalEmbedTest < Minitest::Test
+    def setup
+      @harness = PostToolsTestHarness.new
+    end
+
+    def stub_page(url, og_image)
+      html = "<html><head><meta property='og:title' content='A video'>" \
+        "<meta property='og:description' content='desc'>" \
+        "<meta property='og:image' content='#{og_image}'></head></html>"
+      stub_request(:get, url).to_return(status: 200, body: html, headers: {"Content-Type" => "text/html"})
+    end
+
+    def test_resolves_relative_og_image_against_the_page_url
+      stub_page("https://piped.video/watch?v=abc", "/img/icons/favicon-32x32.png")
+
+      embed = @harness.create_test_external_embed("https://piped.video/watch?v=abc")
+
+      assert_equal ["https://piped.video/img/icons/favicon-32x32.png"], @harness.uploaded_images
+      assert_equal "A video", embed["external"]["title"]
+      assert embed["external"]["thumb"]
+    end
+
+    def test_keeps_absolute_og_image_as_is
+      stub_page("https://example.com/post", "https://cdn.example.com/pic.jpg")
+
+      @harness.create_test_external_embed("https://example.com/post")
+
+      assert_equal ["https://cdn.example.com/pic.jpg"], @harness.uploaded_images
+    end
+
+    def test_omits_thumb_when_the_thumbnail_cannot_be_uploaded
+      stub_page("https://example.com/post", "https://cdn.example.com/missing.jpg")
+      @harness.fail_uploads = true
+
+      embed = @harness.create_test_external_embed("https://example.com/post")
+
+      assert_equal "app.bsky.embed.external", embed["$type"]
+      assert_equal "https://example.com/post", embed["external"]["uri"]
+      refute embed["external"].key?("thumb")
     end
   end
 end
