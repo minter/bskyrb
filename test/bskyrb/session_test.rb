@@ -122,13 +122,68 @@ module Bskyrb
     end
 
     def test_create_session_with_invalid_credentials_raises_unauthorized_error
-      stub_request(:post, "https://bsky.social/xrpc/com.atproto.server.createSession").to_return(status: 401)
+      stub_request(:post, "https://bsky.social/xrpc/com.atproto.server.createSession").to_return(
+        status: 401,
+        body: {error: "AuthenticationRequired", message: "Invalid identifier or password"}.to_json,
+        headers: {"Content-Type" => "application/json"}
+      )
 
       credentials = ATProto::Credentials.new("invalid_username", "invalid_password", "https://bsky.social")
 
-      assert_raises(ATProto::UnauthorizedError) do
+      error = assert_raises(ATProto::UnauthorizedError) do
         ATProto::Session.new(credentials)
       end
+      assert_match "Invalid identifier or password", error.message
+    end
+
+    def test_create_session_rate_limited_raises_http_error_instead_of_nil_token
+      stub_request(:post, "https://bsky.social/xrpc/com.atproto.server.createSession").to_return(
+        status: 429,
+        body: {error: "RateLimitExceeded", message: "Rate Limit Exceeded"}.to_json,
+        headers: {"Content-Type" => "application/json"}
+      )
+
+      credentials = ATProto::Credentials.new("user.test", "password", "https://bsky.social")
+
+      error = assert_raises(ATProto::HTTPError) do
+        ATProto::Session.new(credentials)
+      end
+      assert_match "429", error.message
+      assert_match "RateLimitExceeded", error.message
+    end
+
+    def test_create_session_auth_factor_required_raises_http_error
+      stub_request(:post, "https://bsky.social/xrpc/com.atproto.server.createSession").to_return(
+        status: 400,
+        body: {error: "AuthFactorTokenRequired", message: "A sign in code has been sent to your email address"}.to_json,
+        headers: {"Content-Type" => "application/json"}
+      )
+
+      credentials = ATProto::Credentials.new("user.test", "password", "https://bsky.social")
+
+      error = assert_raises(ATProto::HTTPError) do
+        ATProto::Session.new(credentials)
+      end
+      assert_match "AuthFactorTokenRequired", error.message
+    end
+
+    def test_refresh_session_failure_raises_http_error
+      stub_request(:post, "https://bsky.social/xrpc/com.atproto.server.createSession").to_return(
+        status: 200,
+        body: {accessJwt: "access", refreshJwt: "refresh", did: "did:plc:abc"}.to_json,
+        headers: {"Content-Type" => "application/json"}
+      )
+      stub_request(:post, "https://bsky.social/xrpc/com.atproto.server.refreshSession").to_return(
+        status: 400,
+        body: {error: "ExpiredToken", message: "Token has expired"}.to_json,
+        headers: {"Content-Type" => "application/json"}
+      )
+      stub_request(:get, %r{https://bsky.social/xrpc/com.atproto.identity.resolveDid.*}).to_return(status: 200, body: "{}", headers: {"Content-Type" => "application/json"})
+
+      session = ATProto::Session.new(ATProto::Credentials.new("user.test", "password", "https://bsky.social"))
+
+      error = assert_raises(ATProto::HTTPError) { session.refresh! }
+      assert_match "ExpiredToken", error.message
     end
   end
 end
