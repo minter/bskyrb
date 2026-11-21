@@ -392,6 +392,63 @@ module Bskyrb
       end
     end
 
+    def test_upload_video_blob_reuses_existing_job_on_already_exists_conflict
+      session = create_session
+      stub_video_service_auth
+
+      # A retry re-uploads the same bytes; the video service answers 409 with the
+      # JobStatus of the earlier upload (jobId but no blob) instead of a new job.
+      stub_request(:post, /app\.bsky\.video\.uploadVideo/)
+        .to_return(
+          status: 409,
+          headers: {"Content-Type" => "application/json"},
+          body: {
+            "did" => "did:plc:testuser123",
+            "error" => "already_exists",
+            "jobId" => "existing-job",
+            "message" => "Video already processed",
+            "state" => "JOB_STATE_COMPLETED"
+          }.to_json
+        )
+
+      status_stub = stub_request(:get, "https://video.bsky.app/xrpc/app.bsky.video.getJobStatus?jobId=existing-job")
+        .to_return(
+          status: 200,
+          headers: {"Content-Type" => "application/json"},
+          body: {"jobStatus" => {"jobId" => "existing-job", "state" => "JOB_STATE_COMPLETED", "blob" => video_blob}}.to_json
+        )
+
+      client = Client.new(session)
+
+      with_temp_video do |path|
+        result = client.upload_video_blob(path, "video/mp4")
+        assert_equal "bafkvideo", result["ref"]["$link"]
+      end
+
+      assert_requested status_stub
+    end
+
+    def test_upload_video_blob_raises_on_already_exists_conflict_without_job_or_blob
+      session = create_session
+      stub_video_service_auth
+
+      stub_request(:post, /app\.bsky\.video\.uploadVideo/)
+        .to_return(
+          status: 409,
+          headers: {"Content-Type" => "application/json"},
+          body: {"error" => "already_exists"}.to_json
+        )
+
+      client = Client.new(session)
+
+      with_temp_video do |path|
+        error = assert_raises(RuntimeError) do
+          client.upload_video_blob(path, "video/mp4")
+        end
+        assert_match(/Failed to upload video: 409 - already_exists/, error.message)
+      end
+    end
+
     def test_upload_video_blob_raises_when_upload_limits_disallow_upload
       session = create_session
 

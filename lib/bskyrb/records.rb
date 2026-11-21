@@ -111,7 +111,16 @@ module Bskyrb
       upload_status = video_job_status(response)
       return upload_status["blob"] if upload_status&.dig("blob")
 
-      unless response&.success? && upload_status&.dig("jobId")
+      # Re-uploading bytes the service has already seen (e.g. a retry after a
+      # partial failure) returns 409 already_exists with the earlier job's status.
+      # Reuse that job instead of failing, as the official Bluesky client does.
+      reusing_existing_job = video_already_exists?(upload_status, response) && upload_status&.dig("jobId")
+      if reusing_existing_job
+        Bskyrb.logger.info("Video already uploaded; reusing existing job ID: #{upload_status["jobId"]}")
+      end
+      upload_accepted = (response&.success? || reusing_existing_job) && upload_status&.dig("jobId")
+
+      unless upload_accepted
         # Check for specific error types
         if video_job_error(upload_status, response) == "unconfirmed_email"
           raise "Video upload failed: Bluesky account email not verified. Please check email and verify account before uploading videos."
@@ -238,6 +247,10 @@ module Bskyrb
       status_error = status["error"] || status["message"] if status.is_a?(Hash)
       body = response_body_hash(response)
       status_error || body&.dig("jobStatus", "error") || body&.dig("error") || body&.dig("message")
+    end
+
+    def video_already_exists?(status, response)
+      response&.code == 409 && video_job_error(status, response) == "already_exists"
     end
 
     def response_body_hash(response)
