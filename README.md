@@ -130,6 +130,12 @@ bsky.create_post("Check out this link!", embed_url: "https://example.com")
 
 # Reply with media
 bsky.create_reply(post_uri, "Great post!", embed_images: ["path/to/image.jpg"])
+
+# Quote post (embed_record takes the quoted post's "uri" and "cid")
+bsky.create_post("Look at this!", embed_record: {"uri" => quoted.uri, "cid" => quoted.cid})
+
+# Quote post with media (app.bsky.embed.recordWithMedia; up to 4 images or one video)
+bsky.create_post("My angle on it", embed_record: {"uri" => quoted.uri, "cid" => quoted.cid}, embed_video: "path/to/video.mp4")
 ```
 
 Images are automatically optimized to fit Bluesky's limits:

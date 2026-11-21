@@ -275,7 +275,7 @@ module Bskyrb
       )
     end
 
-    def create_post_or_reply(text, reply_to: nil, embed_url: nil, embed_images: [], embed_video: nil, created_at: DateTime.now.iso8601(3), langs: ["en-US"], facets: [])
+    def create_post_or_reply(text, reply_to: nil, embed_url: nil, embed_images: [], embed_video: nil, embed_record: nil, created_at: DateTime.now.iso8601(3), langs: ["en-US"], facets: [])
       # Create facets from text, supplementing with any manual facets provided
       all_facets = create_facets(text, manual_facets: facets) || []  # Ensure facets is always an array
 
@@ -310,15 +310,36 @@ module Bskyrb
         }
       end
 
-      if embed_url
-        input["record"]["embed"] = create_external_embed(embed_url, self)
-      elsif embed_images.any?
-        input["record"]["embed"] = create_image_embed(embed_images, self)
-      elsif embed_video
-        input["record"]["embed"] = create_video_embed(embed_video, self)
-      end
+      embed = create_post_embed(embed_url: embed_url, embed_images: embed_images, embed_video: embed_video, embed_record: embed_record)
+      input["record"]["embed"] = embed if embed
 
       create_record(input)
+    end
+
+    # Builds the post embed. With embed_record ({"uri", "cid"} of the post being
+    # quoted) this is a native quote; any media is attached alongside it via
+    # app.bsky.embed.recordWithMedia, whose media union does not include
+    # galleries, so images are capped at IMAGE_EMBED_MAX_IMAGES.
+    def create_post_embed(embed_url: nil, embed_images: [], embed_video: nil, embed_record: nil)
+      embed_images ||= []
+      embed_images = embed_images.first(IMAGE_EMBED_MAX_IMAGES) if embed_record && embed_images.is_a?(Array)
+
+      media = if embed_url
+        create_external_embed(embed_url, self)
+      elsif embed_images.any?
+        create_image_embed(embed_images, self)
+      elsif embed_video
+        create_video_embed(embed_video, self)
+      end
+      return media unless embed_record
+
+      record = {
+        "$type" => "app.bsky.embed.record",
+        "record" => {"uri" => embed_record.fetch("uri"), "cid" => embed_record.fetch("cid")}
+      }
+      return record unless media
+
+      {"$type" => "app.bsky.embed.recordWithMedia", "record" => record, "media" => media}
     end
 
     def find_root_post(post)
@@ -330,17 +351,17 @@ module Bskyrb
       root
     end
 
-    def create_post(text, embed_url: nil, embed_images: [], embed_video: nil, created_at: DateTime.now.iso8601(3), langs: ["en-US"], facets: [])
-      create_post_or_reply(text, embed_url: embed_url, embed_images: embed_images, embed_video: embed_video, created_at: created_at, langs: langs, facets: facets)
+    def create_post(text, embed_url: nil, embed_images: [], embed_video: nil, embed_record: nil, created_at: DateTime.now.iso8601(3), langs: ["en-US"], facets: [])
+      create_post_or_reply(text, embed_url: embed_url, embed_images: embed_images, embed_video: embed_video, embed_record: embed_record, created_at: created_at, langs: langs, facets: facets)
     end
 
-    def create_reply(replylink, text, embed_url: nil, embed_images: [], embed_video: nil, created_at: DateTime.now.iso8601(3), langs: ["en-US"], facets: [])
+    def create_reply(replylink, text, embed_url: nil, embed_images: [], embed_video: nil, embed_record: nil, created_at: DateTime.now.iso8601(3), langs: ["en-US"], facets: [])
       reply_to = get_post_by_url(replylink)
       if reply_to.nil?
         raise "Failed to fetch the post to reply to"
       end
 
-      create_post_or_reply(text, reply_to: reply_to, embed_url: embed_url, embed_images: embed_images, embed_video: embed_video, created_at: created_at, langs: langs, facets: facets)
+      create_post_or_reply(text, reply_to: reply_to, embed_url: embed_url, embed_images: embed_images, embed_video: embed_video, embed_record: embed_record, created_at: created_at, langs: langs, facets: facets)
     end
 
     def get_profile(username)

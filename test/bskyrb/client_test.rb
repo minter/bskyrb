@@ -540,6 +540,66 @@ module Bskyrb
       assert_requested create_stub
     end
 
+    QUOTED_RECORD = {"uri" => "at://did:plc:other/app.bsky.feed.post/quoted", "cid" => "bafyquoted"}.freeze
+
+    def stub_create_record_capturing_embed
+      captured = {}
+      stub = stub_request(:post, "https://bsky.social/xrpc/com.atproto.repo.createRecord")
+        .with { |request|
+          captured[:embed] = JSON.parse(request.body).dig("record", "embed")
+          true
+        }
+        .to_return(status: 200, body: '{"uri": "at://test"}', headers: {"Content-Type" => "application/json"})
+      [stub, captured]
+    end
+
+    def test_create_post_with_embed_record_creates_quote_embed
+      session = create_session
+      stub, captured = stub_create_record_capturing_embed
+
+      client = Client.new(session)
+      client.create_post("Quoting", embed_record: QUOTED_RECORD.merge("extra" => "ignored"))
+
+      assert_requested stub
+      assert_equal({"$type" => "app.bsky.embed.record", "record" => QUOTED_RECORD}, captured[:embed])
+    end
+
+    def test_create_post_with_embed_record_and_video_creates_record_with_media
+      session = create_session
+      stub, captured = stub_create_record_capturing_embed
+
+      client = Client.new(session)
+      client.define_singleton_method(:create_video_embed) do |path, _client|
+        {"$type" => "app.bsky.embed.video", "video" => path}
+      end
+      client.create_post("Quoting", embed_record: QUOTED_RECORD, embed_video: "/tmp/video.mp4")
+
+      assert_requested stub
+      assert_equal({
+        "$type" => "app.bsky.embed.recordWithMedia",
+        "record" => {"$type" => "app.bsky.embed.record", "record" => QUOTED_RECORD},
+        "media" => {"$type" => "app.bsky.embed.video", "video" => "/tmp/video.mp4"}
+      }, captured[:embed])
+    end
+
+    def test_create_reply_with_embed_record_and_images_caps_images_for_record_with_media
+      session = create_session
+      stub, captured = stub_create_record_capturing_embed
+      parent = Struct.new(:uri, :cid, :record).new("at://parent", "bafyparent", {})
+
+      client = Client.new(session)
+      client.define_singleton_method(:get_post_by_url) { |_url, _depth = 0| parent }
+      client.define_singleton_method(:create_image_embed) do |images, _client|
+        {"$type" => "app.bsky.embed.images", "images" => images}
+      end
+      images = (1..5).map { |n| "/tmp/image#{n}.jpg" }
+      client.create_reply("at://parent", "Quoting", embed_record: QUOTED_RECORD, embed_images: images)
+
+      assert_requested stub
+      assert_equal "app.bsky.embed.recordWithMedia", captured[:embed]["$type"]
+      assert_equal images.first(4), captured[:embed].dig("media", "images")
+    end
+
     def test_create_post_with_custom_langs
       session = create_session
 

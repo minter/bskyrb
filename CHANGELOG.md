@@ -1,5 +1,6 @@
 ## [Unreleased]
 
+- Add `embed_record:` to `create_post`, `create_reply`, and `create_post_or_reply` for native quote posts, combined with images, video, or a link card via `app.bsky.embed.recordWithMedia`
 - Support up to 10 image attachments per post using Bluesky's gallery embed for posts with 5 or more images
 - Raise video upload size limit to 300MB to match Bluesky's maximum
 - Raise video processing timeout to 15 minutes to accommodate Bluesky's new maximum video length of 10 minutes
