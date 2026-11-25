@@ -9,6 +9,7 @@ module Bskyrb
     @@active_namespace = ""
 
     DEFAULT_LEXICON_SOURCE = "atproto"
+    RUBY_CONSTANT_PATTERN = /\A[A-Z][A-Za-z0-9_]*\z/
 
     def self.def_is_query(defn)
       defn["defs"].has_key?("main") &&
@@ -141,19 +142,28 @@ module Bskyrb
       "#{ns}#{klass_str}"
     end
 
+    def self.generated_constant_parts(klass_str)
+      parts = klass_str.split("::", -1)
+      unless parts.length == 2 && parts.all? { |part| RUBY_CONSTANT_PATTERN.match?(part) }
+        raise ArgumentError, "Lexicon name cannot be represented as a Ruby constant: #{klass_str.inspect}"
+      end
+
+      parts
+    end
+
     def self.basic_template
       %(
-module <%= klass_str.split("::").first %>
-class <%= klass_str.split("::").last %>
+module <%= namespace %>
+class <%= class_name %>
   <% properties.each do |key, value| %>
-  attr_accessor :<%= key %>
+  attr_accessor <%= key.to_s.to_sym.inspect %>
   <% end %>
 
   def self.from_hash(hash)
     # httparty-returned string-keyed hash
     instance = new
     <% properties.each do |key, value| %>
-    instance.send("<%= key %>=", hash["<%= key %>"])
+    instance.send(<%= (key.to_s + "=").inspect %>, hash[<%= key.to_s.inspect %>])
     <% end %>
     instance
   end
@@ -164,26 +174,31 @@ end
 
     def self.basic_class_definitions(classes_hash)
       classes_hash.map do |klass_str, properties|
-        ERB.new(basic_template).result_with_hash({klass_str: klass_str, properties: properties})
+        namespace, class_name = generated_constant_parts(klass_str)
+        ERB.new(basic_template).result_with_hash({
+          namespace: namespace,
+          class_name: class_name,
+          properties: properties
+        })
       end
     end
 
     def self.input_output_template
       %(
-module <%= klass_str.split("::").first %>
-  module <%= klass_str.split("::").last %>
+module <%= namespace %>
+  module <%= class_name %>
     <% ["input", "output"].each do |top_level_key| %>
     <% next unless properties.has_key?(top_level_key) && !properties[top_level_key].nil? %>
     class <%= top_level_key.capitalize %>
       <% properties[top_level_key].each do |key, value| %>
-      attr_accessor :<%= key %>
+      attr_accessor <%= key.to_s.to_sym.inspect %>
       <% end %>
 
       def self.from_hash(hash)
         # httparty-returned string-keyed hash
         instance = new
           <% properties[top_level_key].each do |key, value| %>
-        instance.send("<%= key %>=", hash["<%= key %>"])
+        instance.send(<%= (key.to_s + "=").inspect %>, hash[<%= key.to_s.inspect %>])
           <% end %>
         instance
       end
@@ -191,7 +206,7 @@ module <%= klass_str.split("::").first %>
       def to_h
         {
           <% properties[top_level_key].each do |key, value| %>
-            "<%= key %>" => instance_variable_get(<%= ("@" + key).inspect %>),
+            <%= key.to_s.inspect %> => instance_variable_get(<%= ("@" + key.to_s).inspect %>),
           <% end %>
         }
       end
@@ -204,7 +219,12 @@ end
 
     def self.input_output_class_definitions(classes_hash)
       classes_hash.map do |klass_str, properties|
-        ERB.new(input_output_template).result_with_hash({klass_str: klass_str, properties: properties})
+        namespace, class_name = generated_constant_parts(klass_str)
+        ERB.new(input_output_template).result_with_hash({
+          namespace: namespace,
+          class_name: class_name,
+          properties: properties
+        })
       end
     end
   end

@@ -116,7 +116,64 @@ module Bskyrb
       end
     end
 
+    def test_generated_source_rejects_unsafe_constant_names
+      unsafe_lexicons = [
+        {
+          "lexicon" => 1,
+          "id" => "app.bsky.feed.defs\nend\nKernel.system(\"id payload\")",
+          "defs" => {"postView" => object_with_property("uri")}
+        },
+        {
+          "lexicon" => 1,
+          "id" => "app.bsky.feed.defs",
+          "defs" => {"postView\nend\nKernel.system(\"definition payload\")" => object_with_property("uri")}
+        }
+      ]
+
+      unsafe_lexicons.each do |lexicon|
+        Dir.mktmpdir do |dir|
+          write_lexicon(dir, "app/bsky/feed/defs.json", lexicon)
+
+          error = assert_raises(ArgumentError) { LexiconParser.generated_source(dir) }
+
+          assert_match(/cannot be represented as a Ruby constant/, error.message)
+        end
+      end
+    end
+
+    def test_generated_source_escapes_property_names_as_literals
+      property_name = "name\nend\nKernel.system(\"property payload\")"
+
+      Dir.mktmpdir do |dir|
+        write_lexicon(dir, "app/bsky/feed/defs.json", {
+          "lexicon" => 1,
+          "id" => "app.bsky.feed.defs",
+          "defs" => {
+            "postView" => object_with_property(property_name),
+            "main" => {
+              "type" => "query",
+              "parameters" => object_with_property(property_name)
+            }
+          }
+        })
+
+        source = LexiconParser.generated_source(dir)
+
+        assert_includes source, "attr_accessor #{property_name.to_sym.inspect}"
+        assert_includes source, "instance.send(#{(property_name + "=").inspect}, hash[#{property_name.inspect}])"
+        assert_includes source, "#{property_name.inspect} => instance_variable_get(#{("@" + property_name).inspect})"
+        refute_includes source.lines.map(&:strip), "Kernel.system(\"property payload\")"
+      end
+    end
+
     private
+
+    def object_with_property(property_name)
+      {
+        "type" => "object",
+        "properties" => {property_name => {"type" => "string"}}
+      }
+    end
 
     def write_lexicon(root, relative_path, body)
       path = File.join(root, "lexicons", relative_path)
