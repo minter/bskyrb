@@ -732,6 +732,15 @@ module Bskyrb
       stub_request(:get, url).to_return(status: 200, body: "image bytes", headers: {"Content-Type" => "image/jpeg"})
     end
 
+    # Temporarily replaces a method on one object. Stands in for Minitest's
+    # Object#stub, which minitest 6 no longer loads by default.
+    def with_method_override(object, name, implementation)
+      object.define_singleton_method(name) { |*args| implementation.call(*args) }
+      yield
+    ensure
+      object.singleton_class.send(:remove_method, name) if object.singleton_methods.include?(name)
+    end
+
     def with_env(overrides)
       saved = overrides.keys.to_h { |key| [key, ENV[key]] }
       overrides.each { |key, value| ENV[key] = value }
@@ -744,7 +753,7 @@ module Bskyrb
       resolver = lambda do |host, _port|
         Array(addresses_by_host.fetch(host, "93.184.216.34"))
       end
-      @harness.stub(:resolve_remote_addresses, resolver) { yield }
+      with_method_override(@harness, :resolve_remote_addresses, resolver) { yield }
     end
 
     def test_resolves_relative_og_image_against_the_page_url
@@ -824,7 +833,7 @@ module Bskyrb
       builder = ->(_uri, address) { fake.new(address, tried) }
 
       http = with_remote_fetch_proxy(nil) do
-        @harness.stub(:remote_http, builder) do
+        with_method_override(@harness, :remote_http, builder) do
           @harness.send(:start_remote_http, uri, ["2606:2800:220:1::1", "93.184.216.34"])
         end
       end
@@ -840,7 +849,7 @@ module Bskyrb
 
       error = assert_raises(PostTools::RemoteFetchError) do
         with_remote_fetch_proxy(nil) do
-          @harness.stub(:remote_http, ->(_u, _a) { failing }) do
+          with_method_override(@harness, :remote_http, ->(_u, _a) { failing }) do
             @harness.send(:start_remote_http, uri, ["93.184.216.34", "93.184.216.35"])
           end
         end
