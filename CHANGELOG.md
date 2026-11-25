@@ -9,7 +9,7 @@
 - `Client#upload_blob` refuses files larger than the image upload limit (about 1.95MB) by default. Pass `max_bytes: nil` to upload other blob types.
 - `ATProto::Session` raises `ATProto::HTTPError` (or `ATProto::UnauthorizedError` for 401) on any failed `createSession` or `refreshSession` response, instead of continuing without a token
 - Code generation refuses lexicons whose names or property names can't be expressed as Ruby constants or attribute names
-- `experiments/register.rb` hides the password as you type and asks for it twice. It stores the recovery key in `~/.bskyrb/` (override with `BSKYRB_KEY_DIR`) with owner-only permissions, never overwrites an existing key file, and accepts only an HTTPS server (or HTTP on localhost)
+- `experiments/register.rb` hides the password as you type and asks for it twice. It stores the recovery key in `~/.bskyrb/` (override with `BSKYRB_KEY_DIR`) with owner-only permissions, never overwrites an existing key file, accepts only an HTTPS server (or HTTP on localhost), and writes the key only after the answers have been checked, so an invalid server no longer leaves an unused key file
 - Add `embed_record:` to `create_post`, `create_reply`, and `create_post_or_reply` for native quote posts, combined with images, video, or a link card via `app.bsky.embed.recordWithMedia`
 - Support up to 10 image attachments per post using Bluesky's gallery embed for posts with 5 or more images
 - Raise video upload size limit to 300MB to match Bluesky's maximum

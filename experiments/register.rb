@@ -23,11 +23,6 @@ class Array
   end
 end
 
-key = Secp256k1::PrivateKey.new
-public_key = key.pubkey
-compressed_public_key = public_key.serialize(compressed: true)
-
-did = "did:key:z#{(Bytes[0xe7, 0x1] + compressed_public_key).to_base58}"
 posix = File::ALT_SEPARATOR.nil?
 
 home = begin
@@ -65,6 +60,31 @@ if posix
   end
 end
 
+print "On which server do you want to register (just press Enter if you're clueless what that means)? "
+host = (STDIN.gets || "").chomp
+print "What's your email? "
+email = (STDIN.gets || "").chomp
+print "What handle do you want? "
+handle = (STDIN.gets || "").chomp
+password = prompt_new_password
+print "And finally: What's your invite code? "
+invite_code = (STDIN.gets || "").chomp
+
+host = "https://bsky.social" if host.empty?
+host = "https://#{host}" unless host.match?(%r{\A[a-z][a-z0-9+.-]*://}i)
+begin
+  host = ATProto::Origin.normalize(host)
+rescue ArgumentError => e
+  abort "Invalid server: #{e.message}"
+end
+
+# Generate and store the recovery key only after every answer has been
+# checked, so a typo (e.g. an invalid server) never leaves an unused key file.
+key = Secp256k1::PrivateKey.new
+public_key = key.pubkey
+compressed_public_key = public_key.serialize(compressed: true)
+did = "did:key:z#{(Bytes[0xe7, 0x1] + compressed_public_key).to_base58}"
+
 fn = File.join(key_directory, "#{did.split(":")[-1]}.key")
 puts "Storing the private key for '#{did}' in #{fn}."
 flags = File::WRONLY | File::CREAT | File::EXCL | (defined?(File::BINARY) ? File::BINARY : 0)
@@ -91,23 +111,6 @@ rescue StandardError
 end
 
 puts "Stored the private key for '#{did}' in #{fn}.\nKeep it safe and secure!"
-print "On which server do you want to register (just press Enter if you're clueless what that means)? "
-host = (STDIN.gets || "").chomp
-print "What's your email? "
-email = (STDIN.gets || "").chomp
-print "What handle do you want? "
-handle = (STDIN.gets || "").chomp
-password = prompt_new_password
-print "And finally: What's your invite code? "
-invite_code = (STDIN.gets || "").chomp
-
-host = "https://bsky.social" if host.empty?
-host = "https://#{host}" unless host.match?(%r{\A[a-z][a-z0-9+.-]*://}i)
-begin
-  host = ATProto::Origin.normalize(host)
-rescue ArgumentError => e
-  abort "Invalid server: #{e.message}"
-end
 headers = {
   "Content-Type" => "application/json"
 }
