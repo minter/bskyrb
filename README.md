@@ -146,6 +146,22 @@ Images are automatically optimized to fit Bluesky's limits:
 - Image quality is preserved while reducing file size
 - Supports both local files and remote URLs
 
+Remote preview and image URLs must be absolute HTTP(S) URLs whose DNS records resolve only to public
+addresses. Redirects are checked under the same policy, so loopback, private, link-local, reserved,
+and metadata-service destinations are rejected before a request is sent. Public HTML previews and
+public image responses continue to be supported.
+
+Environment proxy settings (`http_proxy`, `https_proxy`) are ignored for these fetches, so every
+request connects to the exact address that passed the check. If your deployment can only reach the
+internet through a proxy, opt in explicitly:
+
+```ruby
+Bskyrb.remote_fetch_proxy = "http://egress.internal:3128"
+```
+
+A proxy does its own DNS lookup, so the connection can no longer be pinned to the checked address. Only
+use a proxy that itself blocks private, loopback, link-local and metadata-service destinations.
+
 Videos are validated before upload:
 - Maximum size is enforced (300MB)
 - Processing is polled for up to 15 minutes, enough for maximum-length (10 minute) videos
