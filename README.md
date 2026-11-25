@@ -304,7 +304,8 @@ To install this gem onto your local machine, run `bundle exec rake install`. To 
 ### Registering an account
 
 `experiments/register.rb` creates an account on a PDS with a fresh secp256k1 recovery key. It saves the
-private key to `~/.bskyrb/<did>.key` before asking any questions. Set `BSKYRB_KEY_DIR` to use a
+private key to `~/.bskyrb/<did>.key` once your answers have been checked, just before creating the account, so a
+mistake such as an invalid server leaves no key file behind. Set `BSKYRB_KEY_DIR` to use a
 different directory. The directory must belong to you and must not be readable by other users (it is
 created with mode `0700` if missing), and the key file is created with mode `0600`. An existing key file
 is never overwritten. The password is hidden as you type and asked for twice. The server must be HTTPS

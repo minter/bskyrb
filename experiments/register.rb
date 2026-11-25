@@ -1,33 +1,11 @@
 require "secp256k1"
-require "bigdecimal"
+require "securerandom"
 require "httparty"
 require "json"
 require_relative "../lib/atproto/origin"
 require_relative "secret_input"
+require_relative "did_key"
 
-B58BT = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
-
-class Array
-  def to_base58
-    r = ""
-    n = BigDecimal(0)
-    each do |byte|
-      n = n * 256 + byte
-    end
-    loop do
-      r += B58BT[n % 58]
-      n /= 58
-      break if n == 0
-    end
-    r.reverse
-  end
-end
-
-key = Secp256k1::PrivateKey.new
-public_key = key.pubkey
-compressed_public_key = public_key.serialize(compressed: true)
-
-did = "did:key:z#{(Bytes[0xe7, 0x1] + compressed_public_key).to_base58}"
 posix = File::ALT_SEPARATOR.nil?
 
 home = begin
@@ -65,32 +43,6 @@ if posix
   end
 end
 
-fn = File.join(key_directory, "#{did.split(":")[-1]}.key")
-puts "Storing the private key for '#{did}' in #{fn}."
-flags = File::WRONLY | File::CREAT | File::EXCL | (defined?(File::BINARY) ? File::BINARY : 0)
-key_file_created = false
-begin
-  File.open(fn, flags, 0o600) do |key_file|
-    key_file_created = true
-    key_file.binmode
-    if posix
-      key_file.chmod(0o600)
-      unless (key_file.stat.mode & 0o777) == 0o600
-        raise "Recovery key file does not have owner-only permissions: #{fn}"
-      end
-    end
-
-    key_file.write(key.private_key)
-    key_file.flush
-    key_file.fsync
-  end
-rescue StandardError
-  # Don't leave an empty or partial key file behind that could be mistaken for a backup.
-  File.delete(fn) if key_file_created && File.exist?(fn)
-  raise
-end
-
-puts "Stored the private key for '#{did}' in #{fn}.\nKeep it safe and secure!"
 print "On which server do you want to register (just press Enter if you're clueless what that means)? "
 host = (STDIN.gets || "").chomp
 print "What's your email? "
@@ -108,6 +60,41 @@ begin
 rescue ArgumentError => e
   abort "Invalid server: #{e.message}"
 end
+
+# Generate and store the recovery key only after every answer has been
+# checked, so a typo (e.g. an invalid server) never leaves an unused key file.
+# Keep the raw 32-byte secret ourselves: secp256k1-ruby validates it but
+# exposes no public reader for it.
+private_key_bytes = SecureRandom.random_bytes(32)
+key = Secp256k1::PrivateKey.new(privkey: private_key_bytes, raw: true)
+did = secp256k1_did_key(key.pubkey.serialize(compressed: true))
+
+fn = File.join(key_directory, "#{did.split(":")[-1]}.key")
+puts "Storing the private key for '#{did}' in #{fn}."
+flags = File::WRONLY | File::CREAT | File::EXCL | (defined?(File::BINARY) ? File::BINARY : 0)
+key_file_created = false
+begin
+  File.open(fn, flags, 0o600) do |key_file|
+    key_file_created = true
+    key_file.binmode
+    if posix
+      key_file.chmod(0o600)
+      unless (key_file.stat.mode & 0o777) == 0o600
+        raise "Recovery key file does not have owner-only permissions: #{fn}"
+      end
+    end
+
+    key_file.write(private_key_bytes)
+    key_file.flush
+    key_file.fsync
+  end
+rescue StandardError
+  # Don't leave an empty or partial key file behind that could be mistaken for a backup.
+  File.delete(fn) if key_file_created && File.exist?(fn)
+  raise
+end
+
+puts "Stored the private key for '#{did}' in #{fn}.\nKeep it safe and secure!"
 headers = {
   "Content-Type" => "application/json"
 }
