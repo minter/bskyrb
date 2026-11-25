@@ -1,6 +1,7 @@
 require "secp256k1"
 require "bigdecimal"
 require "httparty"
+require "io/console"
 require "json"
 
 B58BT = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
@@ -21,6 +22,12 @@ class Array
   end
 end
 
+def read_secret
+  value = STDIN.tty? ? STDIN.noecho(&:gets) : gets
+  puts if STDIN.tty?
+  (value || "").chomp
+end
+
 key = Secp256k1::PrivateKey.new
 public_key = key.pubkey
 compressed_public_key = public_key.serialize(compressed: true)
@@ -37,9 +44,9 @@ email = (gets || "").chomp
 print "What handle do you want? "
 handle = (gets || "").chomp
 print "What password do you want to use? "
-password = (gets || "").chomp
+password = read_secret
 print "And finally: What's your invite code? "
-invite_code = (gets || "").chomp
+invite_code = read_secret
 
 host = "https://bsky.social" if host.empty?
 host = "https://#{host}" unless host.start_with?("http")
