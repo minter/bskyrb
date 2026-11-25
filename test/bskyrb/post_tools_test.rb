@@ -50,6 +50,23 @@ module Bskyrb
     end
   end
 
+  class ExternalEmbedTestHarness < PostToolsTestHarness
+    def upload_image_with_metadata(file, _client)
+      raise Errno::ENOENT, file.path if fail_uploads
+
+      @uploaded_images << File.binread(file.path)
+      {
+        "image" => {
+          "$type" => "blob",
+          "ref" => {"$link" => "fake-remote-image-#{@uploaded_images.length}"},
+          "mimeType" => "image/jpeg",
+          "size" => File.size(file.path)
+        },
+        "aspectRatio" => {"width" => 1, "height" => 1}
+      }
+    end
+  end
+
   class PostToolsImageEmbedTest < Minitest::Test
     def setup
       @harness = PostToolsTestHarness.new
@@ -701,7 +718,7 @@ end
 module Bskyrb
   class PostToolsExternalEmbedTest < Minitest::Test
     def setup
-      @harness = PostToolsTestHarness.new
+      @harness = ExternalEmbedTestHarness.new
     end
 
     def stub_page(url, og_image)
@@ -711,33 +728,141 @@ module Bskyrb
       stub_request(:get, url).to_return(status: 200, body: html, headers: {"Content-Type" => "text/html"})
     end
 
+    def stub_image(url)
+      stub_request(:get, url).to_return(status: 200, body: "image bytes", headers: {"Content-Type" => "image/jpeg"})
+    end
+
+    def with_dns(addresses_by_host = {})
+      resolver = lambda do |host, _port|
+        Array(addresses_by_host.fetch(host, "93.184.216.34"))
+      end
+      @harness.stub(:resolve_remote_addresses, resolver) { yield }
+    end
+
     def test_resolves_relative_og_image_against_the_page_url
       stub_page("https://piped.video/watch?v=abc", "/img/icons/favicon-32x32.png")
+      stub_image("https://piped.video/img/icons/favicon-32x32.png")
 
-      embed = @harness.create_test_external_embed("https://piped.video/watch?v=abc")
+      embed = with_dns { @harness.create_test_external_embed("https://piped.video/watch?v=abc") }
 
-      assert_equal ["https://piped.video/img/icons/favicon-32x32.png"], @harness.uploaded_images
+      assert_requested :get, "https://piped.video/img/icons/favicon-32x32.png"
+      assert_equal ["image bytes"], @harness.uploaded_images
       assert_equal "A video", embed["external"]["title"]
       assert embed["external"]["thumb"]
     end
 
     def test_keeps_absolute_og_image_as_is
       stub_page("https://example.com/post", "https://cdn.example.com/pic.jpg")
+      stub_image("https://cdn.example.com/pic.jpg")
 
-      @harness.create_test_external_embed("https://example.com/post")
+      with_dns { @harness.create_test_external_embed("https://example.com/post") }
 
-      assert_equal ["https://cdn.example.com/pic.jpg"], @harness.uploaded_images
+      assert_requested :get, "https://cdn.example.com/pic.jpg"
+      assert_equal ["image bytes"], @harness.uploaded_images
     end
 
     def test_omits_thumb_when_the_thumbnail_cannot_be_uploaded
       stub_page("https://example.com/post", "https://cdn.example.com/missing.jpg")
+      stub_image("https://cdn.example.com/missing.jpg")
       @harness.fail_uploads = true
 
-      embed = @harness.create_test_external_embed("https://example.com/post")
+      embed = with_dns { @harness.create_test_external_embed("https://example.com/post") }
 
       assert_equal "app.bsky.embed.external", embed["$type"]
       assert_equal "https://example.com/post", embed["external"]["uri"]
       refute embed["external"].key?("thumb")
+    end
+
+    def test_rejects_non_public_ipv4_and_ipv6_destinations
+      blocked_addresses = [
+        "127.0.0.1",
+        "10.0.0.1",
+        "169.254.169.254",
+        "::1",
+        "fc00::1",
+        "fe80::1"
+      ]
+
+      blocked_addresses.each do |address|
+        error = assert_raises(PostTools::RemoteFetchError) do
+          with_dns("example.com" => address) do
+            @harness.send(
+              :fetch_remote_resource,
+              "https://example.com/post",
+              expected_content_types: PostTools::REMOTE_PAGE_CONTENT_TYPES
+            ) { raise "request must not be sent" }
+          end
+        end
+        assert_match(/non-public/, error.message)
+      end
+
+      assert_not_requested :get, "https://example.com/post"
+    end
+
+    def test_rejects_mixed_public_and_private_dns_answers
+      error = assert_raises(PostTools::RemoteFetchError) do
+        with_dns("example.com" => ["93.184.216.34", "127.0.0.1"]) do
+          @harness.send(
+            :fetch_remote_resource,
+            "https://example.com/post",
+            expected_content_types: PostTools::REMOTE_PAGE_CONTENT_TYPES
+          ) { raise "request must not be sent" }
+        end
+      end
+
+      assert_match(/non-public/, error.message)
+      assert_not_requested :get, "https://example.com/post"
+    end
+
+    def test_pins_the_validated_public_address
+      uri = @harness.send(:normalize_remote_uri, "https://example.com/post")
+
+      http = @harness.send(:remote_http, uri, "93.184.216.34")
+
+      assert_equal "93.184.216.34", http.ipaddr
+      assert_equal "example.com", http.address
+    end
+
+    def test_revalidates_a_redirect_before_following_it
+      start_url = "https://example.com/redirect"
+      private_url = "http://169.254.169.254/latest/meta-data/"
+      stub_request(:get, start_url).to_return(status: 302, headers: {"Location" => private_url})
+
+      assert_raises(PostTools::RemoteFetchError) do
+        with_dns("example.com" => "93.184.216.34", "169.254.169.254" => "169.254.169.254") do
+          @harness.create_test_external_embed(start_url)
+        end
+      end
+
+      assert_not_requested :get, private_url
+    end
+
+    def test_omits_private_og_image_from_a_public_page
+      page_url = "https://example.com/post"
+      private_image_url = "http://10.0.0.8/secret.jpg"
+      stub_page(page_url, private_image_url)
+
+      embed = with_dns("example.com" => "93.184.216.34", "10.0.0.8" => "10.0.0.8") do
+        @harness.create_test_external_embed(page_url)
+      end
+
+      refute embed["external"].key?("thumb")
+      assert_not_requested :get, private_image_url
+      assert_empty @harness.uploaded_images
+    end
+
+    def test_rejects_private_remote_image_before_upload
+      metadata = with_dns("10.0.0.8" => "10.0.0.8") do
+        @harness.send(
+          :download_and_upload_image_with_metadata,
+          Addressable::URI.parse("http://10.0.0.8/secret.jpg"),
+          @harness
+        )
+      end
+
+      assert_nil metadata
+      assert_not_requested :get, "http://10.0.0.8/secret.jpg"
+      assert_empty @harness.uploaded_images
     end
   end
 end

@@ -1,4 +1,7 @@
 require "uri"
+require "ipaddr"
+require "net/http"
+require "socket"
 require_relative "../atproto/requests"
 require "xrpc"
 require "nokogiri"
@@ -29,6 +32,46 @@ module Bskyrb
     TAG_PATTERN = /(^|\s)([#＃])((?!\ufe0f)[^\s#{ZERO_WIDTH_TAG_CHARS}]*[^\d\s\p{P}#{ZERO_WIDTH_TAG_CHARS}]+[^\s#{ZERO_WIDTH_TAG_CHARS}]*)?/u
     CASHTAG_PATTERN = /(^|\s|\()\$([A-Za-z][A-Za-z0-9]{0,4})(?=\s|$|[.,;:!?)"'\u2019])/u
     NON_LINK_TLDS = %w[avif gif jpeg jpg png svg webp].freeze
+    REMOTE_REDIRECT_LIMIT = 5
+    REMOTE_PAGE_CONTENT_TYPES = %w[text/html application/xhtml+xml].freeze
+    REMOTE_IMAGE_CONTENT_TYPES = ["image/"].freeze
+    BLOCKED_REMOTE_NETWORKS = %w[
+      0.0.0.0/8
+      10.0.0.0/8
+      100.64.0.0/10
+      127.0.0.0/8
+      169.254.0.0/16
+      172.16.0.0/12
+      192.0.0.0/24
+      192.0.2.0/24
+      192.88.99.0/24
+      192.168.0.0/16
+      198.18.0.0/15
+      198.51.100.0/24
+      203.0.113.0/24
+      224.0.0.0/4
+      240.0.0.0/4
+      ::/96
+      ::ffff:0:0/96
+      64:ff9b::/96
+      64:ff9b:1::/48
+      100::/64
+      2001::/32
+      2001:2::/48
+      2001:10::/28
+      2001:20::/28
+      2001:db8::/32
+      2002::/16
+      3fff::/20
+      5f00::/16
+      fc00::/7
+      fe80::/10
+      fec0::/10
+      ff00::/8
+    ].map { |network| IPAddr.new(network) }.freeze
+
+    class RemoteFetchError < ArgumentError
+    end
 
     # Check if two facets have overlapping byte ranges
     def facets_overlap?(facet1, facet2)
@@ -334,9 +377,106 @@ module Bskyrb
       }
     end
 
+    def normalize_remote_uri(value)
+      uri = URI.parse(value.to_s).normalize
+      unless uri.is_a?(URI::HTTP) && uri.absolute? && uri.hostname && !uri.hostname.empty?
+        raise RemoteFetchError, "Remote URL must be an absolute HTTP(S) URL"
+      end
+      raise RemoteFetchError, "Remote URL must not include credentials" if uri.userinfo
+      raise RemoteFetchError, "Remote URL must not include an IPv6 zone identifier" if uri.hostname.include?("%")
+
+      uri
+    rescue URI::InvalidURIError => e
+      raise RemoteFetchError, "Invalid remote URL: #{e.message}"
+    end
+
+    def resolve_remote_addresses(host, port)
+      Addrinfo.getaddrinfo(host, port, nil, :STREAM).map(&:ip_address).uniq
+    rescue SocketError => e
+      raise RemoteFetchError, "Could not resolve remote host: #{e.message}"
+    end
+
+    def public_remote_address(uri)
+      addresses = resolve_remote_addresses(uri.hostname, uri.port)
+      raise RemoteFetchError, "Remote host did not resolve to an address" if addresses.empty?
+
+      parsed_addresses = addresses.map { |address| IPAddr.new(address) }
+      if parsed_addresses.any? { |address| blocked_remote_address?(address) }
+        raise RemoteFetchError, "Remote host resolves to a non-public address"
+      end
+
+      addresses.first
+    rescue IPAddr::InvalidAddressError => e
+      raise RemoteFetchError, "Remote host resolved to an invalid address: #{e.message}"
+    end
+
+    def blocked_remote_address?(address)
+      BLOCKED_REMOTE_NETWORKS.any? do |network|
+        network.ipv4? == address.ipv4? && network.include?(address)
+      end
+    end
+
+    def remote_http(uri, address)
+      http = Net::HTTP.new(uri.hostname, uri.port, nil)
+      http.ipaddr = address
+      http.use_ssl = uri.scheme == "https"
+      http
+    end
+
+    def validate_remote_content_type!(response, expected_content_types)
+      content_type = response["content-type"].to_s.split(";", 2).first.strip.downcase
+      accepted = expected_content_types.any? do |expected|
+        expected.end_with?("/") ? content_type.start_with?(expected) : content_type == expected
+      end
+      return if accepted
+
+      raise RemoteFetchError, "Remote response has an unsupported content type"
+    end
+
+    def fetch_remote_resource(value, expected_content_types:, redirects_remaining: REMOTE_REDIRECT_LIMIT)
+      uri = normalize_remote_uri(value)
+
+      loop do
+        address = public_remote_address(uri)
+        redirect_location = nil
+        result = nil
+
+        remote_http(uri, address).start do |http|
+          request = Net::HTTP::Get.new(uri.request_uri)
+          http.request(request) do |response|
+            case response
+            when Net::HTTPSuccess
+              validate_remote_content_type!(response, expected_content_types)
+              result = yield response, uri
+            when Net::HTTPRedirection
+              redirect_location = response["location"]
+              if redirect_location.nil? || redirect_location.strip.empty?
+                raise RemoteFetchError, "Remote redirect is missing a location"
+              end
+            else
+              raise RemoteFetchError, "Remote request returned HTTP #{response.code}"
+            end
+          end
+        end
+
+        return result unless redirect_location
+        raise RemoteFetchError, "Too many remote redirects" if redirects_remaining.zero?
+
+        redirects_remaining -= 1
+        redirect_url = Addressable::URI.join(uri.to_s, redirect_location.strip).normalize.to_s
+        uri = normalize_remote_uri(redirect_url)
+      end
+    end
+
     def create_external_embed(embed_url, client)
-      response = HTTParty.get(embed_url)
-      doc = Nokogiri::HTML.parse(response.body)
+      requested_uri = normalize_remote_uri(embed_url)
+      page_body, page_uri = fetch_remote_resource(
+        requested_uri,
+        expected_content_types: REMOTE_PAGE_CONTENT_TYPES
+      ) do |response, final_uri|
+        [response.body, final_uri]
+      end
+      doc = Nokogiri::HTML.parse(page_body)
       og_data = {
         title: nil,
         description: nil,
@@ -357,12 +497,12 @@ module Bskyrb
       embed_data = {
         "$type" => "app.bsky.embed.external",
         "external" => {
-          "uri" => embed_url,
+          "uri" => requested_uri.to_s,
           "title" => og_data[:title] || "",
           "description" => og_data[:description] || ""
         }
       }
-      thumb = external_thumb_blob(embed_url, og_data[:image], client)
+      thumb = external_thumb_blob(page_uri, og_data[:image], client)
       embed_data["external"]["thumb"] = thumb if thumb
       embed_data
     end
@@ -373,8 +513,9 @@ module Bskyrb
     def external_thumb_blob(page_url, og_image, client)
       return nil if og_image.nil? || og_image.strip.empty?
 
-      image_url = Addressable::URI.join(page_url, og_image.strip).normalize.to_s
-      get_image_blob(image_url, client)
+      image_uri = normalize_remote_uri(Addressable::URI.join(page_url.to_s, og_image.strip).normalize.to_s)
+      upload_metadata = download_and_upload_image_with_metadata(image_uri, client)
+      upload_metadata && upload_metadata["image"]
     rescue => e
       Bskyrb.logger.warn("Skipping external embed thumbnail #{og_image.inspect} for #{page_url}: #{e.message}")
       nil
@@ -472,16 +613,13 @@ module Bskyrb
     end
 
     def download_and_upload_image_with_metadata(uri, client)
+      uri = normalize_remote_uri(uri)
       tempfile = Tempfile.new(["thumb", File.extname(uri.path)])
       begin
-        # Download the file
-        Net::HTTP.start(uri.host, uri.port, use_ssl: uri.scheme == "https") do |http|
-          request = Net::HTTP::Get.new(uri.to_s)
-          http.request request do |response|
-            File.open(tempfile.path, "wb") do |io|
-              response.read_body do |chunk|
-                io.write chunk
-              end
+        fetch_remote_resource(uri, expected_content_types: REMOTE_IMAGE_CONTENT_TYPES) do |response, _final_uri|
+          File.open(tempfile.path, "wb") do |io|
+            response.read_body do |chunk|
+              io.write chunk
             end
           end
         end
