@@ -1,7 +1,8 @@
 require "uri"
+require "ipaddr"
 require "net/http"
 require "openssl"
-require "httparty"
+require "socket"
 require_relative "../atproto/requests"
 require "xrpc"
 require "nokogiri"
@@ -32,6 +33,62 @@ module Bskyrb
     TAG_PATTERN = /(^|\s)([#＃])((?!\ufe0f)[^\s#{ZERO_WIDTH_TAG_CHARS}]*[^\d\s\p{P}#{ZERO_WIDTH_TAG_CHARS}]+[^\s#{ZERO_WIDTH_TAG_CHARS}]*)?/u
     CASHTAG_PATTERN = /(^|\s|\()\$([A-Za-z][A-Za-z0-9]{0,4})(?=\s|$|[.,;:!?)"'\u2019])/u
     NON_LINK_TLDS = %w[avif gif jpeg jpg png svg webp].freeze
+    REMOTE_REDIRECT_LIMIT = 5
+    REMOTE_PAGE_CONTENT_TYPES = %w[text/html application/xhtml+xml].freeze
+    # Many object stores (S3 in particular) serve images as a generic binary
+    # type or with no Content-Type at all; MiniMagick rejects non-images later.
+    REMOTE_IMAGE_CONTENT_TYPES = ["image/", "application/octet-stream", "binary/octet-stream", ""].freeze
+    # Connection failures that mean "try the next resolved address".
+    REMOTE_CONNECT_ERRORS = [
+      Errno::ECONNREFUSED,
+      Errno::EHOSTUNREACH,
+      Errno::ENETUNREACH,
+      Errno::EADDRNOTAVAIL,
+      Errno::ETIMEDOUT,
+      Net::OpenTimeout
+    ].freeze
+    BLOCKED_REMOTE_NETWORKS = %w[
+      0.0.0.0/8
+      10.0.0.0/8
+      100.64.0.0/10
+      127.0.0.0/8
+      169.254.0.0/16
+      172.16.0.0/12
+      192.0.0.0/24
+      192.0.2.0/24
+      192.88.99.0/24
+      192.168.0.0/16
+      198.18.0.0/15
+      198.51.100.0/24
+      203.0.113.0/24
+      224.0.0.0/4
+      240.0.0.0/4
+      ::/96
+      ::ffff:0:0/96
+      64:ff9b::/96
+      64:ff9b:1::/48
+      100::/64
+      2001::/32
+      2001:2::/48
+      2001:10::/28
+      2001:20::/28
+      2001:db8::/32
+      2002::/16
+      3fff::/20
+      5f00::/16
+      fc00::/7
+      fe80::/10
+      fec0::/10
+      ff00::/8
+    ].map { |network| IPAddr.new(network) }.freeze
+
+    class RemoteFetchError < ArgumentError
+    end
+
+    # Raised when a URL (or a redirect target) points at a non-public address.
+    # Unlike other fetch failures, this is never softened into a fallback.
+    class BlockedRemoteAddressError < RemoteFetchError
+    end
 
     # Limits for fetching link-preview pages and remote images, so one slow or
     # huge remote resource can't hang post creation or exhaust memory/disk.
@@ -41,25 +98,21 @@ module Bskyrb
     REMOTE_PAGE_MAX_BYTES = 2 * 1024 * 1024
     REMOTE_IMAGE_MAX_BYTES = 20 * 1024 * 1024
 
-    class RemoteResourceTooLarge < StandardError
+    class RemoteResourceTooLarge < RemoteFetchError
     end
 
-    class RemoteResourceTimeout < StandardError
+    class RemoteResourceTimeout < RemoteFetchError
     end
 
-    # Failures reaching a link-preview page. Any of these gets a minimal link
-    # card instead of failing the whole post.
-    REMOTE_PAGE_ERRORS = [
-      HTTParty::Error,
+    # Low-level failures reaching a remote host (refused, reset, timeout, TLS).
+    # fetch_remote_resource wraps these in RemoteFetchError, so an unreachable
+    # link gets a minimal card and a bad image is skipped.
+    REMOTE_NETWORK_ERRORS = [
       SocketError,
       SystemCallError,
       IOError,
       Timeout::Error,
-      OpenSSL::SSL::SSLError,
-      URI::Error,
-      Addressable::URI::InvalidURIError,
-      RemoteResourceTooLarge,
-      RemoteResourceTimeout
+      OpenSSL::SSL::SSLError
     ].freeze
 
     # Check if two facets have overlapping byte ranges
@@ -366,8 +419,183 @@ module Bskyrb
       }
     end
 
+    # Non-ASCII URLs (IRIs, IDN hosts) are percent-encoded/punycoded by
+    # Addressable first; strict URI.parse rejects them.
+    def normalize_remote_uri(value)
+      uri = URI.parse(Addressable::URI.parse(value.to_s).normalize.to_s).normalize
+      unless uri.is_a?(URI::HTTP) && uri.absolute? && uri.hostname && !uri.hostname.empty?
+        raise RemoteFetchError, "Remote URL must be an absolute HTTP(S) URL"
+      end
+      raise RemoteFetchError, "Remote URL must not include credentials" if uri.userinfo
+      raise RemoteFetchError, "Remote URL must not include an IPv6 zone identifier" if uri.hostname.include?("%")
+
+      uri
+    rescue URI::InvalidURIError, Addressable::URI::InvalidURIError => e
+      raise RemoteFetchError, "Invalid remote URL: #{e.message}"
+    end
+
+    def resolve_remote_addresses(host, port)
+      Addrinfo.getaddrinfo(host, port, nil, :STREAM).map(&:ip_address).uniq
+    rescue SocketError => e
+      raise RemoteFetchError, "Could not resolve remote host: #{e.message}"
+    end
+
+    def public_remote_addresses(uri)
+      addresses = resolve_remote_addresses(uri.hostname, uri.port)
+      raise RemoteFetchError, "Remote host did not resolve to an address" if addresses.empty?
+
+      parsed_addresses = addresses.map { |address| IPAddr.new(address) }
+      if parsed_addresses.any? { |address| blocked_remote_address?(address) }
+        raise BlockedRemoteAddressError, "Remote host resolves to a non-public address"
+      end
+
+      addresses
+    rescue IPAddr::InvalidAddressError => e
+      raise RemoteFetchError, "Remote host resolved to an invalid address: #{e.message}"
+    end
+
+    def blocked_remote_address?(address)
+      BLOCKED_REMOTE_NETWORKS.any? do |network|
+        network.ipv4? == address.ipv4? && network.include?(address)
+      end
+    end
+
+    # Environment proxy settings are deliberately ignored: through a proxy the
+    # connection can't be pinned to the validated address, which reopens DNS
+    # rebinding. A proxy is used only when Bskyrb.remote_fetch_proxy is set.
+    def remote_proxy_uri(_uri)
+      configured = Bskyrb.remote_fetch_proxy
+      return nil if configured.nil? || configured.to_s.strip.empty?
+
+      proxy = URI.parse(configured.to_s)
+      unless proxy.is_a?(URI::HTTP) && proxy.hostname && !proxy.hostname.empty?
+        raise RemoteFetchError, "Bskyrb.remote_fetch_proxy must be an http(s) URL"
+      end
+
+      proxy
+    rescue URI::InvalidURIError => e
+      raise RemoteFetchError, "Invalid Bskyrb.remote_fetch_proxy: #{e.message}"
+    end
+
+    def remote_http(uri, address)
+      proxy = remote_proxy_uri(uri)
+      http = if proxy
+        Net::HTTP.new(uri.hostname, uri.port, proxy.hostname, proxy.port,
+          proxy.user && URI.decode_www_form_component(proxy.user),
+          proxy.password && URI.decode_www_form_component(proxy.password))
+      else
+        Net::HTTP.new(uri.hostname, uri.port, nil).tap { |h| h.ipaddr = address }
+      end
+      http.use_ssl = uri.scheme == "https"
+      http.open_timeout = REMOTE_OPEN_TIMEOUT
+      http.read_timeout = REMOTE_READ_TIMEOUT
+      http
+    end
+
+    # Connects to the first reachable validated address, so a dual-stack host
+    # still works when this machine can't route one address family.
+    def start_remote_http(uri, addresses)
+      addresses = addresses.first(1) if remote_proxy_uri(uri)
+      last_error = nil
+      addresses.each do |address|
+        http = remote_http(uri, address)
+        begin
+          return http.start
+        rescue *REMOTE_CONNECT_ERRORS => e
+          last_error = e
+        end
+      end
+      raise RemoteFetchError, "Could not connect to remote host: #{last_error.message}"
+    end
+
+    # Streams a response body in chunks, enforcing a byte cap and the overall
+    # deadline so one slow or huge resource can't hang post creation.
+    def read_remote_body(response, max_bytes, deadline)
+      bytes = 0
+      response.read_body do |chunk|
+        check_remote_deadline!(deadline)
+        bytes += chunk.bytesize
+        raise RemoteResourceTooLarge, "remote resource exceeds #{max_bytes} bytes" if bytes > max_bytes
+
+        yield chunk
+      end
+    end
+
+    def validate_remote_content_type!(response, expected_content_types)
+      content_type = response["content-type"].to_s.split(";", 2).first.to_s.strip.downcase
+      accepted = expected_content_types.any? do |expected|
+        expected.end_with?("/") ? content_type.start_with?(expected) : content_type == expected
+      end
+      return if accepted
+
+      raise RemoteFetchError, "Remote response has an unsupported content type"
+    end
+
+    # Yields (response, final_uri, deadline) for a 2xx response; read the body
+    # with read_remote_body so size and time limits apply.
+    def fetch_remote_resource(value, expected_content_types:, redirects_remaining: REMOTE_REDIRECT_LIMIT, &block)
+      uri = normalize_remote_uri(value)
+      deadline = remote_deadline
+
+      loop do
+        check_remote_deadline!(deadline)
+        addresses = public_remote_addresses(uri)
+        redirect_location = nil
+        result = nil
+
+        http = start_remote_http(uri, addresses)
+        begin
+          request = Net::HTTP::Get.new(uri.request_uri)
+          http.request(request) do |response|
+            case response
+            when Net::HTTPSuccess
+              validate_remote_content_type!(response, expected_content_types)
+              result = block.call(response, uri, deadline)
+            when Net::HTTPRedirection
+              redirect_location = response["location"]
+              if redirect_location.nil? || redirect_location.strip.empty?
+                raise RemoteFetchError, "Remote redirect is missing a location"
+              end
+            else
+              raise RemoteFetchError, "Remote request returned HTTP #{response.code}"
+            end
+          end
+        rescue *REMOTE_NETWORK_ERRORS => e
+          raise RemoteFetchError, "Remote request failed: #{e.class}: #{e.message}"
+        ensure
+          http.finish if http.started?
+        end
+
+        return result unless redirect_location
+        raise RemoteFetchError, "Too many remote redirects" if redirects_remaining.zero?
+
+        redirects_remaining -= 1
+        redirect_url = Addressable::URI.join(uri.to_s, redirect_location.strip).normalize.to_s
+        uri = normalize_remote_uri(redirect_url)
+      end
+    end
+
     def create_external_embed(embed_url, client)
-      doc = Nokogiri::HTML.parse(fetch_external_page(embed_url))
+      requested_uri = normalize_remote_uri(embed_url)
+      begin
+        page_body, page_uri = fetch_remote_resource(
+          requested_uri,
+          expected_content_types: REMOTE_PAGE_CONTENT_TYPES
+        ) do |response, final_uri, deadline|
+          body = +""
+          read_remote_body(response, REMOTE_PAGE_MAX_BYTES, deadline) { |chunk| body << chunk }
+          [body, final_uri]
+        end
+      rescue BlockedRemoteAddressError
+        raise
+      rescue RemoteFetchError => e
+        # A page we can't read (403, 404, non-HTML, unreachable, too large...)
+        # still gets a minimal link card rather than sinking the whole post.
+        Bskyrb.logger.warn("Using minimal external embed for #{embed_url}: #{e.message}")
+        page_body = ""
+        page_uri = requested_uri
+      end
+      doc = Nokogiri::HTML.parse(page_body)
       og_data = {
         title: nil,
         description: nil,
@@ -388,40 +616,14 @@ module Bskyrb
       embed_data = {
         "$type" => "app.bsky.embed.external",
         "external" => {
-          "uri" => embed_url,
+          "uri" => embed_url.to_s,
           "title" => og_data[:title] || "",
           "description" => og_data[:description] || ""
         }
       }
-      thumb = external_thumb_blob(embed_url, og_data[:image], client)
+      thumb = external_thumb_blob(page_uri, og_data[:image], client)
       embed_data["external"]["thumb"] = thumb if thumb
       embed_data
-    end
-
-    # Returns the page body, or "" when the page can't be fetched, so an
-    # unreachable link still gets a minimal card. Non-ASCII URLs (IRIs, IDN
-    # hosts) are percent-encoded/punycoded first; strict URI.parse rejects them.
-    def fetch_external_page(embed_url)
-      url = Addressable::URI.parse(embed_url.to_s).normalize.to_s
-      deadline = remote_deadline
-      body = +""
-      HTTParty.get(
-        url,
-        stream_body: true,
-        open_timeout: REMOTE_OPEN_TIMEOUT,
-        read_timeout: REMOTE_READ_TIMEOUT
-      ) do |fragment|
-        check_remote_deadline!(deadline)
-        # Skip the bodies of redirect responses HTTParty follows along the way.
-        next if (300..399).cover?(fragment.code)
-
-        body << fragment
-        raise RemoteResourceTooLarge, "page exceeds #{REMOTE_PAGE_MAX_BYTES} bytes" if body.bytesize > REMOTE_PAGE_MAX_BYTES
-      end
-      body
-    rescue *REMOTE_PAGE_ERRORS => e
-      Bskyrb.logger.warn("Using minimal external embed for #{embed_url}: #{e.class}: #{e.message}")
-      ""
     end
 
     def remote_deadline
@@ -451,8 +653,9 @@ module Bskyrb
     def external_thumb_blob(page_url, og_image, client)
       return nil if og_image.nil? || og_image.strip.empty?
 
-      image_url = Addressable::URI.join(page_url, og_image.strip).normalize.to_s
-      get_image_blob(image_url, client)
+      image_uri = normalize_remote_uri(Addressable::URI.join(page_url.to_s, og_image.strip).normalize.to_s)
+      upload_metadata = download_and_upload_image_with_metadata(image_uri, client)
+      upload_metadata && upload_metadata["image"]
     rescue => e
       Bskyrb.logger.warn("Skipping external embed thumbnail #{og_image.inspect} for #{page_url}: #{e.message}")
       nil
@@ -552,31 +755,12 @@ module Bskyrb
     def download_and_upload_image_with_metadata(uri, client)
       tempfile = nil
       begin
-        deadline = remote_deadline
-        Net::HTTP.start(
-          uri.host, uri.port,
-          use_ssl: uri.scheme == "https",
-          open_timeout: REMOTE_OPEN_TIMEOUT,
-          read_timeout: REMOTE_READ_TIMEOUT
-        ) do |http|
-          request = Net::HTTP::Get.new(uri.to_s)
-          http.request request do |response|
-            unless response.is_a?(Net::HTTPSuccess)
-              raise "Remote image request returned HTTP #{response.code}"
-            end
-
-            tempfile = Tempfile.new(["thumb", remote_image_extension(response["content-type"], uri)])
-            tempfile.binmode
-            bytes = 0
-            response.read_body do |chunk|
-              check_remote_deadline!(deadline)
-              bytes += chunk.bytesize
-              raise RemoteResourceTooLarge, "image exceeds #{REMOTE_IMAGE_MAX_BYTES} bytes" if bytes > REMOTE_IMAGE_MAX_BYTES
-
-              tempfile.write(chunk)
-            end
-            tempfile.flush
-          end
+        uri = normalize_remote_uri(uri)
+        fetch_remote_resource(uri, expected_content_types: REMOTE_IMAGE_CONTENT_TYPES) do |response, final_uri, deadline|
+          tempfile = Tempfile.new(["thumb", remote_image_extension(response["content-type"], final_uri)])
+          tempfile.binmode
+          read_remote_body(response, REMOTE_IMAGE_MAX_BYTES, deadline) { |chunk| tempfile.write(chunk) }
+          tempfile.flush
         end
         upload_image_with_metadata(tempfile, client)
       rescue => e
