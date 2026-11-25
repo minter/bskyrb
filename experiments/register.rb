@@ -1,8 +1,8 @@
 require "secp256k1"
 require "bigdecimal"
 require "httparty"
-require "io/console"
 require "json"
+require_relative "secret_input"
 
 B58BT = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 
@@ -22,31 +22,24 @@ class Array
   end
 end
 
-def read_secret
-  value = STDIN.tty? ? STDIN.noecho(&:gets) : gets
-  puts if STDIN.tty?
-  (value || "").chomp
-end
-
 key = Secp256k1::PrivateKey.new
 public_key = key.pubkey
 compressed_public_key = public_key.serialize(compressed: true)
 
 did = "did:key:z#{(Bytes[0xe7, 0x1] + compressed_public_key).to_base58}"
 fn = "#{did.split(":")[-1]}.key"
-File.write(fn, key.private_key)
+File.write(fn, key.private_key, perm: 0o600)
 
 puts "Stored the private key for '#{did}' as a hexstring in #{fn}.\nKeep it safe and secure!"
 print "On which server do you want to register (just press Enter if you're clueless what that means)? "
-host = (gets || "").chomp
+host = (STDIN.gets || "").chomp
 print "What's your email? "
-email = (gets || "").chomp
+email = (STDIN.gets || "").chomp
 print "What handle do you want? "
-handle = (gets || "").chomp
-print "What password do you want to use? "
-password = read_secret
+handle = (STDIN.gets || "").chomp
+password = prompt_new_password
 print "And finally: What's your invite code? "
-invite_code = read_secret
+invite_code = (STDIN.gets || "").chomp
 
 host = "https://bsky.social" if host.empty?
 host = "https://#{host}" unless host.start_with?("http")
