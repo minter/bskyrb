@@ -141,32 +141,73 @@ module Bskyrb
       end
     end
 
-    def test_generated_source_escapes_property_names_as_literals
-      property_name = "name\nend\nKernel.system(\"property payload\")"
+    def test_generated_source_rejects_unsafe_names_in_query_lexicons
+      payload = "\nend\nKernel.system(\"query payload\")"
+      lexicons = [
+        {"lexicon" => 1, "id" => "app.bsky.feed.getThing#{payload}",
+         "defs" => {"main" => {"type" => "query", "parameters" => object_with_property("uri")}}},
+        {"lexicon" => 1, "id" => "app.bsky.feed.getThing",
+         "defs" => {"main" => {"type" => "query", "parameters" => object_with_property("bad#{payload}")}}}
+      ]
 
+      lexicons.each do |lexicon|
+        Dir.mktmpdir do |dir|
+          write_lexicon(dir, "app/bsky/feed/getThing.json", lexicon)
+
+          assert_raises(ArgumentError) { LexiconParser.generated_source(dir) }
+        end
+      end
+    end
+
+    def test_generated_constant_parts_requires_two_valid_segments
+      assert_equal %w[AppBskyFeedDefs PostView], LexiconParser.generated_constant_parts("AppBskyFeedDefs::PostView")
+
+      ["PostView", "A::B::C", "app::PostView", "A::", "A::B-C", "A::B\nend"].each do |name|
+        assert_raises(ArgumentError, name) { LexiconParser.generated_constant_parts(name) }
+      end
+    end
+
+    def test_generated_source_rejects_property_names_that_are_not_ruby_identifiers
+      ["name\nend\nKernel.system(\"property payload\")", "foo-bar", "$type", "foo?", "1abc"].each do |property_name|
+        [
+          {"postView" => object_with_property(property_name)},
+          {"main" => {"type" => "query", "parameters" => object_with_property(property_name)}}
+        ].each do |defs|
+          Dir.mktmpdir do |dir|
+            write_lexicon(dir, "app/bsky/feed/defs.json", {"lexicon" => 1, "id" => "app.bsky.feed.defs", "defs" => defs})
+
+            error = assert_raises(ArgumentError, property_name) { LexiconParser.generated_source(dir) }
+            assert_match(/cannot be represented as a Ruby attribute/, error.message)
+          end
+        end
+      end
+    end
+
+    def test_generated_source_with_valid_properties_is_safe_to_eval
       Dir.mktmpdir do |dir|
         write_lexicon(dir, "app/bsky/feed/defs.json", {
           "lexicon" => 1,
           "id" => "app.bsky.feed.defs",
           "defs" => {
-            "postView" => object_with_property(property_name),
-            "main" => {
-              "type" => "query",
-              "parameters" => object_with_property(property_name)
-            }
+            "postView" => object_with_property("displayName"),
+            "main" => {"type" => "query", "parameters" => object_with_property("displayName")}
           }
         })
 
         source = LexiconParser.generated_source(dir)
 
-        assert_includes source, "attr_accessor #{property_name.to_sym.inspect}"
-        assert_includes source, "instance.send(#{(property_name + "=").inspect}, hash[#{property_name.inspect}])"
-        assert_includes source, "#{property_name.inspect} => instance_variable_get(#{("@" + property_name).inspect})"
-        refute_includes source.lines.map(&:strip), "Kernel.system(\"property payload\")"
+        assert_includes source, "attr_accessor :displayName"
+        assert_includes source, 'instance.send("displayName=", hash["displayName"])'
+        assert_includes source, '"displayName" => instance_variable_get("@displayName")'
+        assert_nothing_raised_syntax(source)
       end
     end
 
     private
+
+    def assert_nothing_raised_syntax(source)
+      assert RubyVM::InstructionSequence.compile(source)
+    end
 
     def object_with_property(property_name)
       {

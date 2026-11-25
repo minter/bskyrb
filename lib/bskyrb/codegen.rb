@@ -10,6 +10,7 @@ module Bskyrb
 
     DEFAULT_LEXICON_SOURCE = "atproto"
     RUBY_CONSTANT_PATTERN = /\A[A-Z][A-Za-z0-9_]*\z/
+    RUBY_PROPERTY_PATTERN = /\A[A-Za-z_][A-Za-z0-9_]*\z/
 
     def self.def_is_query(defn)
       defn["defs"].has_key?("main") &&
@@ -151,6 +152,13 @@ module Bskyrb
       parts
     end
 
+    def self.validate_property_names!(names)
+      names.each do |name|
+        next if RUBY_PROPERTY_PATTERN.match?(name.to_s)
+        raise ArgumentError, "Lexicon property cannot be represented as a Ruby attribute: #{name.to_s.inspect}"
+      end
+    end
+
     def self.basic_template
       %(
 module <%= namespace %>
@@ -175,6 +183,7 @@ end
     def self.basic_class_definitions(classes_hash)
       classes_hash.map do |klass_str, properties|
         namespace, class_name = generated_constant_parts(klass_str)
+        validate_property_names!(properties.keys)
         ERB.new(basic_template).result_with_hash({
           namespace: namespace,
           class_name: class_name,
@@ -220,6 +229,9 @@ end
     def self.input_output_class_definitions(classes_hash)
       classes_hash.map do |klass_str, properties|
         namespace, class_name = generated_constant_parts(klass_str)
+        %w[input output].each do |top_level_key|
+          validate_property_names!(properties[top_level_key].keys) if properties[top_level_key]
+        end
         ERB.new(input_output_template).result_with_hash({
           namespace: namespace,
           class_name: class_name,
