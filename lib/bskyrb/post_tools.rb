@@ -1,4 +1,7 @@
 require "uri"
+require "net/http"
+require "openssl"
+require "httparty"
 require_relative "../atproto/requests"
 require "xrpc"
 require "nokogiri"
@@ -29,6 +32,35 @@ module Bskyrb
     TAG_PATTERN = /(^|\s)([#＃])((?!\ufe0f)[^\s#{ZERO_WIDTH_TAG_CHARS}]*[^\d\s\p{P}#{ZERO_WIDTH_TAG_CHARS}]+[^\s#{ZERO_WIDTH_TAG_CHARS}]*)?/u
     CASHTAG_PATTERN = /(^|\s|\()\$([A-Za-z][A-Za-z0-9]{0,4})(?=\s|$|[.,;:!?)"'\u2019])/u
     NON_LINK_TLDS = %w[avif gif jpeg jpg png svg webp].freeze
+
+    # Limits for fetching link-preview pages and remote images, so one slow or
+    # huge remote resource can't hang post creation or exhaust memory/disk.
+    REMOTE_OPEN_TIMEOUT = 10
+    REMOTE_READ_TIMEOUT = 15
+    REMOTE_TOTAL_TIMEOUT = 30
+    REMOTE_PAGE_MAX_BYTES = 2 * 1024 * 1024
+    REMOTE_IMAGE_MAX_BYTES = 20 * 1024 * 1024
+
+    class RemoteResourceTooLarge < StandardError
+    end
+
+    class RemoteResourceTimeout < StandardError
+    end
+
+    # Failures reaching a link-preview page. Any of these gets a minimal link
+    # card instead of failing the whole post.
+    REMOTE_PAGE_ERRORS = [
+      HTTParty::Error,
+      SocketError,
+      SystemCallError,
+      IOError,
+      Timeout::Error,
+      OpenSSL::SSL::SSLError,
+      URI::Error,
+      Addressable::URI::InvalidURIError,
+      RemoteResourceTooLarge,
+      RemoteResourceTimeout
+    ].freeze
 
     # Check if two facets have overlapping byte ranges
     def facets_overlap?(facet1, facet2)
@@ -335,8 +367,7 @@ module Bskyrb
     end
 
     def create_external_embed(embed_url, client)
-      response = HTTParty.get(embed_url)
-      doc = Nokogiri::HTML.parse(response.body)
+      doc = Nokogiri::HTML.parse(fetch_external_page(embed_url))
       og_data = {
         title: nil,
         description: nil,
@@ -365,6 +396,53 @@ module Bskyrb
       thumb = external_thumb_blob(embed_url, og_data[:image], client)
       embed_data["external"]["thumb"] = thumb if thumb
       embed_data
+    end
+
+    # Returns the page body, or "" when the page can't be fetched, so an
+    # unreachable link still gets a minimal card. Non-ASCII URLs (IRIs, IDN
+    # hosts) are percent-encoded/punycoded first; strict URI.parse rejects them.
+    def fetch_external_page(embed_url)
+      url = Addressable::URI.parse(embed_url.to_s).normalize.to_s
+      deadline = remote_deadline
+      body = +""
+      HTTParty.get(
+        url,
+        stream_body: true,
+        open_timeout: REMOTE_OPEN_TIMEOUT,
+        read_timeout: REMOTE_READ_TIMEOUT
+      ) do |fragment|
+        check_remote_deadline!(deadline)
+        # Skip the bodies of redirect responses HTTParty follows along the way.
+        next if (300..399).cover?(fragment.code)
+
+        body << fragment
+        raise RemoteResourceTooLarge, "page exceeds #{REMOTE_PAGE_MAX_BYTES} bytes" if body.bytesize > REMOTE_PAGE_MAX_BYTES
+      end
+      body
+    rescue *REMOTE_PAGE_ERRORS => e
+      Bskyrb.logger.warn("Using minimal external embed for #{embed_url}: #{e.class}: #{e.message}")
+      ""
+    end
+
+    def remote_deadline
+      Process.clock_gettime(Process::CLOCK_MONOTONIC) + REMOTE_TOTAL_TIMEOUT
+    end
+
+    def check_remote_deadline!(deadline)
+      return if Process.clock_gettime(Process::CLOCK_MONOTONIC) <= deadline
+
+      raise RemoteResourceTimeout, "remote fetch exceeded #{REMOTE_TOTAL_TIMEOUT}s"
+    end
+
+    # Picks the tempfile extension (which upload_image maps to the blob's MIME
+    # type) from the response Content-Type, falling back to the URL's extension.
+    def remote_image_extension(content_type, uri)
+      type = content_type.to_s.split(";", 2).first.to_s.strip.downcase
+      if type.start_with?("image/")
+        extension = MiniMime.lookup_by_content_type(type)&.extension
+        return ".#{extension}" if extension
+      end
+      File.extname(uri.path.to_s)
     end
 
     # og:image is often a relative path (piped.video serves "/img/icons/..."),
@@ -472,17 +550,32 @@ module Bskyrb
     end
 
     def download_and_upload_image_with_metadata(uri, client)
-      tempfile = Tempfile.new(["thumb", File.extname(uri.path)])
+      tempfile = nil
       begin
-        # Download the file
-        Net::HTTP.start(uri.host, uri.port, use_ssl: uri.scheme == "https") do |http|
+        deadline = remote_deadline
+        Net::HTTP.start(
+          uri.host, uri.port,
+          use_ssl: uri.scheme == "https",
+          open_timeout: REMOTE_OPEN_TIMEOUT,
+          read_timeout: REMOTE_READ_TIMEOUT
+        ) do |http|
           request = Net::HTTP::Get.new(uri.to_s)
           http.request request do |response|
-            File.open(tempfile.path, "wb") do |io|
-              response.read_body do |chunk|
-                io.write chunk
-              end
+            unless response.is_a?(Net::HTTPSuccess)
+              raise "Remote image request returned HTTP #{response.code}"
             end
+
+            tempfile = Tempfile.new(["thumb", remote_image_extension(response["content-type"], uri)])
+            tempfile.binmode
+            bytes = 0
+            response.read_body do |chunk|
+              check_remote_deadline!(deadline)
+              bytes += chunk.bytesize
+              raise RemoteResourceTooLarge, "image exceeds #{REMOTE_IMAGE_MAX_BYTES} bytes" if bytes > REMOTE_IMAGE_MAX_BYTES
+
+              tempfile.write(chunk)
+            end
+            tempfile.flush
           end
         end
         upload_image_with_metadata(tempfile, client)
@@ -490,8 +583,8 @@ module Bskyrb
         Bskyrb.logger.error("Error downloading image: #{e.message}")
         nil
       ensure
-        tempfile.close
-        tempfile.unlink
+        tempfile&.close
+        tempfile&.unlink
       end
     end
 

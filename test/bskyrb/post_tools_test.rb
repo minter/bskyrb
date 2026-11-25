@@ -739,5 +739,124 @@ module Bskyrb
       assert_equal "https://example.com/post", embed["external"]["uri"]
       refute embed["external"].key?("thumb")
     end
+
+    def assert_minimal_card(embed, url)
+      assert_equal "app.bsky.embed.external", embed["$type"]
+      assert_equal url, embed["external"]["uri"]
+      assert_equal "", embed["external"]["title"]
+      assert_equal "", embed["external"]["description"]
+      refute embed["external"].key?("thumb")
+    end
+
+    def test_falls_back_to_minimal_card_when_the_connection_is_refused
+      stub_request(:get, "https://example.com/post").to_raise(Errno::ECONNREFUSED)
+
+      assert_minimal_card(@harness.create_test_external_embed("https://example.com/post"), "https://example.com/post")
+    end
+
+    def test_falls_back_to_minimal_card_on_tls_failure
+      stub_request(:get, "https://example.com/post").to_raise(OpenSSL::SSL::SSLError.new("certificate has expired"))
+
+      assert_minimal_card(@harness.create_test_external_embed("https://example.com/post"), "https://example.com/post")
+    end
+
+    def test_falls_back_to_minimal_card_on_timeout
+      stub_request(:get, "https://example.com/post").to_timeout
+
+      assert_minimal_card(@harness.create_test_external_embed("https://example.com/post"), "https://example.com/post")
+    end
+
+    def test_falls_back_to_minimal_card_when_the_page_is_too_large
+      big = "<html><head><meta property='og:title' content='Big'></head>" + ("x" * (PostTools::REMOTE_PAGE_MAX_BYTES + 1))
+      stub_request(:get, "https://example.com/huge").to_return(status: 200, body: big, headers: {"Content-Type" => "text/html"})
+
+      assert_minimal_card(@harness.create_test_external_embed("https://example.com/huge"), "https://example.com/huge")
+    end
+
+    def test_follows_redirects_without_mixing_in_the_redirect_body
+      stub_request(:get, "https://example.com/old")
+        .to_return(status: 301, body: "<html><head><meta property='og:title' content='Moved'></head></html>",
+          headers: {"Location" => "https://example.com/new"})
+      stub_page("https://example.com/new", "")
+
+      embed = @harness.create_test_external_embed("https://example.com/old")
+
+      assert_equal "A video", embed["external"]["title"]
+      assert_equal "https://example.com/old", embed["external"]["uri"]
+    end
+
+    def test_fetches_non_ascii_urls_and_keeps_the_original_in_the_card
+      stub_page("https://de.wikipedia.org/wiki/K%C3%B6ln", "")
+
+      embed = @harness.create_test_external_embed("https://de.wikipedia.org/wiki/Köln")
+
+      assert_equal "A video", embed["external"]["title"]
+      assert_equal "https://de.wikipedia.org/wiki/Köln", embed["external"]["uri"]
+    end
+  end
+
+  class PostToolsRemoteImageDownloadTest < Minitest::Test
+    class Harness
+      include ATProto::RequestUtils
+      include PostTools
+
+      attr_reader :uploaded
+
+      def initialize
+        @uploaded = []
+      end
+
+      def upload_image_with_metadata(file, _client)
+        @uploaded << {extname: File.extname(file.path), bytes: File.binread(file.path)}
+        {"image" => {"$type" => "blob"}, "aspectRatio" => {"width" => 1, "height" => 1}}
+      end
+    end
+
+    def setup
+      @harness = Harness.new
+    end
+
+    def download(url)
+      @harness.send(:download_and_upload_image_with_metadata, Addressable::URI.parse(url), @harness)
+    end
+
+    def test_names_the_tempfile_from_the_response_content_type
+      stub_request(:get, "https://site.example/og-image?id=42")
+        .to_return(status: 200, body: "png bytes", headers: {"Content-Type" => "image/png"})
+
+      assert download("https://site.example/og-image?id=42")
+      assert_equal [{extname: ".png", bytes: "png bytes"}], @harness.uploaded
+    end
+
+    def test_falls_back_to_the_url_extension_for_non_image_types
+      stub_request(:get, "https://bucket.example/photo.jpg")
+        .to_return(status: 200, body: "jpg bytes", headers: {"Content-Type" => "binary/octet-stream"})
+
+      assert download("https://bucket.example/photo.jpg")
+      assert_equal ".jpg", @harness.uploaded.first[:extname]
+    end
+
+    def test_skips_images_over_the_size_limit
+      stub_request(:get, "https://site.example/huge.jpg")
+        .to_return(status: 200, body: "x" * (PostTools::REMOTE_IMAGE_MAX_BYTES + 1), headers: {"Content-Type" => "image/jpeg"})
+
+      assert_nil download("https://site.example/huge.jpg")
+      assert_empty @harness.uploaded
+    end
+
+    def test_skips_error_responses
+      stub_request(:get, "https://site.example/missing.jpg")
+        .to_return(status: 404, body: "not found", headers: {"Content-Type" => "text/html"})
+
+      assert_nil download("https://site.example/missing.jpg")
+      assert_empty @harness.uploaded
+    end
+
+    def test_skips_images_that_time_out
+      stub_request(:get, "https://site.example/slow.jpg").to_timeout
+
+      assert_nil download("https://site.example/slow.jpg")
+      assert_empty @harness.uploaded
+    end
   end
 end
