@@ -1,27 +1,10 @@
 require "secp256k1"
-require "bigdecimal"
+require "securerandom"
 require "httparty"
 require "json"
 require_relative "../lib/atproto/origin"
 require_relative "secret_input"
-
-B58BT = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
-
-class Array
-  def to_base58
-    r = ""
-    n = BigDecimal(0)
-    each do |byte|
-      n = n * 256 + byte
-    end
-    loop do
-      r += B58BT[n % 58]
-      n /= 58
-      break if n == 0
-    end
-    r.reverse
-  end
-end
+require_relative "did_key"
 
 posix = File::ALT_SEPARATOR.nil?
 
@@ -80,10 +63,11 @@ end
 
 # Generate and store the recovery key only after every answer has been
 # checked, so a typo (e.g. an invalid server) never leaves an unused key file.
-key = Secp256k1::PrivateKey.new
-public_key = key.pubkey
-compressed_public_key = public_key.serialize(compressed: true)
-did = "did:key:z#{(Bytes[0xe7, 0x1] + compressed_public_key).to_base58}"
+# Keep the raw 32-byte secret ourselves: secp256k1-ruby validates it but
+# exposes no public reader for it.
+private_key_bytes = SecureRandom.random_bytes(32)
+key = Secp256k1::PrivateKey.new(privkey: private_key_bytes, raw: true)
+did = secp256k1_did_key(key.pubkey.serialize(compressed: true))
 
 fn = File.join(key_directory, "#{did.split(":")[-1]}.key")
 puts "Storing the private key for '#{did}' in #{fn}."
@@ -100,7 +84,7 @@ begin
       end
     end
 
-    key_file.write(key.private_key)
+    key_file.write(private_key_bytes)
     key_file.flush
     key_file.fsync
   end
