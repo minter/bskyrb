@@ -59,7 +59,12 @@ module Bskyrb
 
     def upload_blob(blob_path, content_type)
       # Image compression is handled by upload_image/compress_image in PostTools.
-      # This method just reads and uploads the bytes as-is.
+      # Refuse anything above that boundary before allocating the request body.
+      file_size = File.size(blob_path)
+      if file_size > PostTools::IMAGE_UPLOAD_MAX_BYTES
+        raise "Image too large to upload: #{file_size} bytes"
+      end
+
       image_bytes = File.binread(blob_path)
 
       response = authenticated_request(
