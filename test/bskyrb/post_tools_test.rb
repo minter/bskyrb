@@ -2,6 +2,7 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "stringio"
 
 module Bskyrb
   # Test harness that includes PostTools with a stubbed resolve_handle
@@ -47,6 +48,43 @@ module Bskyrb
           "height" => 1
         }
       }
+    end
+  end
+
+  class PostToolsRemoteImageTestHarness
+    include PostTools
+
+    attr_reader :uploaded_body, :uploaded_path
+
+    # Every host resolves to a public address so the SSRF check passes.
+    def resolve_remote_addresses(_host, _port)
+      ["93.184.216.34"]
+    end
+
+    def download_test_image(url)
+      uri = Addressable::URI.parse(url).normalize
+      download_and_upload_image_with_metadata(uri, self)
+    end
+
+    def upload_image_with_metadata(file, _client)
+      @uploaded_path = file.path
+      @uploaded_body = File.binread(file.path)
+      {"image" => {"ref" => {"$link" => "fake-image"}}}
+    end
+
+    def read_test_response(chunks, max_bytes, destination)
+      response = Struct.new(:chunks) do
+        def [](_header)
+          nil
+        end
+
+        def read_body
+          chunks.each { |chunk| yield chunk }
+        end
+      end.new(chunks)
+
+      read_remote_body(response, max_bytes, remote_deadline) { |chunk| destination.write(chunk) }
+      destination
     end
   end
 
@@ -117,6 +155,69 @@ module Bskyrb
       embed = @harness.create_test_image_embed(images)
 
       assert_equal "Alt text 5", embed["items"][4]["alt"]
+    end
+
+    def test_configures_image_processor_resource_limits
+      PostTools::IMAGE_MAGICK_RESOURCE_LIMITS.each do |name, limit|
+        assert_equal limit, ENV.fetch(name)
+      end
+    end
+  end
+
+  class PostToolsRemoteImageTest < Minitest::Test
+    def setup
+      @harness = PostToolsRemoteImageTestHarness.new
+    end
+
+    def test_downloads_supported_image_within_limit
+      url = "https://cdn.example.com/photo.png"
+      stub_request(:get, url).to_return(
+        status: 200,
+        body: "bounded image",
+        headers: {"Content-Type" => "image/png"}
+      )
+
+      result = @harness.download_test_image(url)
+
+      assert result["image"]
+      assert_equal "bounded image", @harness.uploaded_body
+      refute File.exist?(@harness.uploaded_path)
+    end
+
+    def test_rejects_image_declared_over_download_limit
+      url = "https://cdn.example.com/oversized.png"
+      stub_request(:get, url).to_return(
+        status: 200,
+        body: "",
+        headers: {
+          "Content-Type" => "image/png",
+          "Content-Length" => (PostTools::REMOTE_IMAGE_MAX_BYTES + 1).to_s
+        }
+      )
+
+      assert_nil @harness.download_test_image(url)
+      assert_nil @harness.uploaded_body
+    end
+
+    def test_stops_before_writing_chunk_over_limit
+      destination = StringIO.new
+
+      assert_raises(PostTools::RemoteResourceTooLarge) do
+        @harness.read_test_response(["1234", "5"], 4, destination)
+      end
+      assert_equal "1234", destination.string
+    end
+
+    def test_rejects_non_image_response
+      url = "https://cdn.example.com/not-an-image.png"
+      stub_request(:get, url).to_return(
+        status: 200,
+        body: "not an image",
+        headers: {"Content-Type" => "text/plain"}
+      )
+
+      assert_nil @harness.download_test_image(url)
+      assert_nil @harness.uploaded_body
     end
   end
 
@@ -1037,6 +1138,33 @@ module Bskyrb
       assert_equal "", embed["external"]["title"]
       assert_equal "", embed["external"]["description"]
       refute embed["external"].key?("thumb")
+    end
+
+    def test_falls_back_to_minimal_card_when_page_declares_an_oversized_length
+      url = "https://example.com/oversized"
+      stub_request(:get, url).to_return(
+        status: 200,
+        body: "",
+        headers: {
+          "Content-Type" => "text/html",
+          "Content-Length" => (PostTools::REMOTE_PAGE_MAX_BYTES + 1).to_s
+        }
+      )
+
+      assert_minimal_card(with_dns { @harness.create_test_external_embed(url) }, url)
+      assert_empty @harness.uploaded_images
+    end
+
+    def test_follows_relative_redirect_for_html_page
+      stub_request(:get, "https://example.com/redirect")
+        .to_return(status: 302, headers: {"Location" => "/post"})
+      stub_page("https://example.com/post", "https://cdn.example.com/pic.jpg")
+      stub_image("https://cdn.example.com/pic.jpg")
+
+      embed = with_dns { @harness.create_test_external_embed("https://example.com/redirect") }
+
+      assert_equal "A video", embed["external"]["title"]
+      assert_equal ["image bytes"], @harness.uploaded_images
     end
 
     def test_falls_back_to_minimal_card_when_the_connection_is_refused

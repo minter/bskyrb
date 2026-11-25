@@ -274,6 +274,21 @@ module Bskyrb
       end
     end
 
+    def test_upload_blob_rejects_file_above_image_limit
+      session = create_session
+      client = Client.new(session)
+      tempfile = Tempfile.new(["oversized", ".jpg"])
+      tempfile.truncate(PostTools::IMAGE_UPLOAD_MAX_BYTES + 1)
+      tempfile.close
+
+      begin
+        assert_nil client.upload_blob(tempfile.path, "image/jpeg")
+        assert_not_requested :post, "https://bsky.social/xrpc/com.atproto.repo.uploadBlob"
+      ensure
+        tempfile.unlink
+      end
+    end
+
     def test_upload_video_blob_accepts_top_level_job_status_response
       session = create_session
       stub_video_service_auth
