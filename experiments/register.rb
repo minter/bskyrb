@@ -2,6 +2,7 @@ require "secp256k1"
 require "bigdecimal"
 require "httparty"
 require "json"
+require_relative "secret_input"
 
 B58BT = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 
@@ -89,17 +90,15 @@ rescue StandardError
 end
 
 puts "Stored the private key for '#{did}' in #{fn}.\nKeep it safe and secure!"
-puts "Stored the private key for '#{did}' as a hexstring in #{fn}.\nKeep it safe and secure!"
 print "On which server do you want to register (just press Enter if you're clueless what that means)? "
-host = (gets || "").chomp
+host = (STDIN.gets || "").chomp
 print "What's your email? "
-email = (gets || "").chomp
+email = (STDIN.gets || "").chomp
 print "What handle do you want? "
-handle = (gets || "").chomp
-print "What password do you want to use? "
-password = (gets || "").chomp
+handle = (STDIN.gets || "").chomp
+password = prompt_new_password
 print "And finally: What's your invite code? "
-invite_code = (gets || "").chomp
+invite_code = (STDIN.gets || "").chomp
 
 host = "https://bsky.social" if host.empty?
 host = "https://#{host}" unless host.start_with?("http")
