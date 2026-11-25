@@ -7,6 +7,7 @@ require_relative "../atproto/requests"
 require "xrpc"
 require "nokogiri"
 require "tempfile"
+require "monitor"
 require "mini_mime"
 require "addressable/uri"
 require "mini_magick"
@@ -29,14 +30,14 @@ module Bskyrb
     IMAGE_MAX_DIMENSION = 4000
     IMAGE_PROCESSING_TIMEOUT = 10
     IMAGE_MAGICK_RESOURCE_LIMITS = {
-      "MAGICK_AREA_LIMIT" => "32MP",
-      "MAGICK_MEMORY_LIMIT" => "64MiB",
-      "MAGICK_MAP_LIMIT" => "64MiB",
-      "MAGICK_DISK_LIMIT" => "128MiB",
-      "MAGICK_FILE_LIMIT" => "16",
-      "MAGICK_THREAD_LIMIT" => "1",
-      "MAGICK_TIME_LIMIT" => IMAGE_PROCESSING_TIMEOUT.to_s
+      "MAGICK_AREA_LIMIT" => "100MP",
+      "MAGICK_MEMORY_LIMIT" => "256MiB",
+      "MAGICK_MAP_LIMIT" => "256MiB",
+      "MAGICK_DISK_LIMIT" => "512MiB",
+      "MAGICK_FILE_LIMIT" => "32",
+      "MAGICK_THREAD_LIMIT" => "1"
     }.freeze
+    IMAGE_LIMITS_MONITOR = Monitor.new
     DEFAULT_IMAGE_ASPECT_RATIO = {"width" => 1, "height" => 1}.freeze
     MENTION_PATTERN = /(^|\s|\()(@)([a-zA-Z0-9.-]+)(\b)/
     URL_PATTERN = /(^|\s|\()((https?:\/\/\S+)|(([a-z][a-z0-9]*(\.[a-z0-9]+)+)\S*))/i
@@ -127,9 +128,22 @@ module Bskyrb
       OpenSSL::SSL::SSLError
     ].freeze
 
-    IMAGE_MAGICK_RESOURCE_LIMITS.each { |name, value| ENV[name] = value }
-    MiniMagick.configure do |config|
-      config.timeout = IMAGE_PROCESSING_TIMEOUT
+    # Applies ImageMagick resource limits only while the block runs, so the
+    # host process's environment and MiniMagick config are left alone. Limits
+    # the host already set (ENV or MiniMagick.timeout) win over our defaults.
+    def with_image_limits
+      IMAGE_LIMITS_MONITOR.synchronize do
+        applied = IMAGE_MAGICK_RESOURCE_LIMITS.reject { |name, _| ENV.key?(name) }
+        applied.each { |name, value| ENV[name] = value }
+        set_timeout = MiniMagick.timeout.nil?
+        MiniMagick.timeout = IMAGE_PROCESSING_TIMEOUT if set_timeout
+        begin
+          yield
+        ensure
+          MiniMagick.timeout = nil if set_timeout
+          applied.each_key { |name| ENV.delete(name) }
+        end
+      end
     end
 
     # Check if two facets have overlapping byte ranges
@@ -532,7 +546,8 @@ module Bskyrb
       declared = response["content-length"]
       if declared
         length = Integer(declared, exception: false)
-        if length.nil? || length.negative? || length > max_bytes
+        # An unparseable header is ignored; the streaming cap below still applies.
+        if length && (length.negative? || length > max_bytes)
           raise RemoteResourceTooLarge, "remote resource exceeds #{max_bytes} bytes"
         end
       end
@@ -853,11 +868,13 @@ module Bskyrb
     end
 
     def get_image_aspect_ratio(file_path)
-      image = MiniMagick::Image.open(file_path)
-      {
-        "width" => image.width,
-        "height" => image.height
-      }
+      with_image_limits do
+        image = MiniMagick::Image.open(file_path)
+        {
+          "width" => image.width,
+          "height" => image.height
+        }
+      end
     rescue => e
       Bskyrb.logger.debug("Could not inspect image aspect ratio: #{e.message}")
       DEFAULT_IMAGE_ASPECT_RATIO.dup
@@ -866,14 +883,23 @@ module Bskyrb
     def image_within_limits?(file_path, max_size, max_dimension)
       return false if File.size(file_path) > max_size
 
-      image = MiniMagick::Image.open(file_path)
-      image.width <= max_dimension && image.height <= max_dimension
+      with_image_limits do
+        image = MiniMagick::Image.open(file_path)
+        image.width <= max_dimension && image.height <= max_dimension
+      end
     rescue => e
+      # If we can't inspect the image (e.g. ImageMagick unavailable), let the
+      # upload proceed and rely on the server to validate. The byte cap above
+      # and in upload_blob still bound the size.
       Bskyrb.logger.debug("Could not inspect image dimensions: #{e.message}")
-      false
+      true
     end
 
     def compress_image(file_path, max_size, max_dimension = 4000)
+      with_image_limits { compress_image_unlimited(file_path, max_size, max_dimension) }
+    end
+
+    def compress_image_unlimited(file_path, max_size, max_dimension)
       # Create a temporary file for the compressed image
       temp_file = Tempfile.new(["compressed", File.extname(file_path)])
 

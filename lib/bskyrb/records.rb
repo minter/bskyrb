@@ -57,12 +57,13 @@ module Bskyrb
       nil
     end
 
-    def upload_blob(blob_path, content_type)
+    def upload_blob(blob_path, content_type, max_bytes: PostTools::IMAGE_UPLOAD_MAX_BYTES)
       # Image compression is handled by upload_image/compress_image in PostTools.
-      # Refuse anything above that boundary before allocating the request body.
+      # Refuse anything above max_bytes (default: the image boundary; pass nil
+      # for other blob types) before allocating the request body.
       file_size = File.size(blob_path)
-      if file_size > PostTools::IMAGE_UPLOAD_MAX_BYTES
-        raise "Image too large to upload: #{file_size} bytes"
+      if max_bytes && file_size > max_bytes
+        raise "Blob too large to upload: #{file_size} bytes (max #{max_bytes})"
       end
 
       image_bytes = File.binread(blob_path)

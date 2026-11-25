@@ -157,11 +157,51 @@ module Bskyrb
       assert_equal "Alt text 5", embed["items"][4]["alt"]
     end
 
-    def test_configures_image_processor_resource_limits
-      PostTools::IMAGE_MAGICK_RESOURCE_LIMITS.each do |name, limit|
-        assert_equal limit, ENV.fetch(name)
-      end
+    def test_image_limits_are_scoped_and_do_not_override_host_settings
+      ENV["MAGICK_AREA_LIMIT"] = "1GP"
+      seen = nil
+      PostToolsUploadHarness.new.send(:with_image_limits) { seen = ENV.to_h.slice(*PostTools::IMAGE_MAGICK_RESOURCE_LIMITS.keys) }
+
+      assert_equal "1GP", seen["MAGICK_AREA_LIMIT"]
+      assert_equal PostTools::IMAGE_MAGICK_RESOURCE_LIMITS["MAGICK_MEMORY_LIMIT"], seen["MAGICK_MEMORY_LIMIT"]
+      assert_nil ENV["MAGICK_MEMORY_LIMIT"]
+      assert_equal "1GP", ENV["MAGICK_AREA_LIMIT"]
+    ensure
+      ENV.delete("MAGICK_AREA_LIMIT")
     end
+
+    def test_inspection_failure_does_not_block_small_upload
+      file = Tempfile.new(["small", ".png"])
+      file.write("x")
+      file.flush
+      client = Object.new
+      client.define_singleton_method(:upload_blob) do |_path, _type|
+        {"blob" => {"ref" => "r", "mimeType" => "image/png", "size" => 1}}
+      end
+      original = MiniMagick::Image.method(:open)
+      MiniMagick::Image.define_singleton_method(:open) { |*| raise "no imagemagick" }
+      begin
+        assert_equal "r", PostToolsUploadHarness.new.send(:upload_image, file, client)["ref"]
+      ensure
+        MiniMagick::Image.define_singleton_method(:open, original)
+      end
+    ensure
+      file&.close!
+    end
+
+    def test_upload_returns_nil_when_compression_fails
+      harness = PostToolsUploadHarness.new
+      file = Tempfile.new(["big", ".jpg"])
+      file.truncate(PostTools::IMAGE_UPLOAD_MAX_BYTES + 1)
+      harness.define_singleton_method(:compress_image) { |*| nil }
+      assert_nil harness.send(:upload_image, file, Object.new)
+    ensure
+      file&.close!
+    end
+  end
+
+  class PostToolsUploadHarness
+    include PostTools
   end
 
   class PostToolsRemoteImageTest < Minitest::Test
