@@ -44,7 +44,11 @@ invite_code = (gets || "").chomp
 
 host = "https://bsky.social" if host.empty?
 host = "https://#{host}" unless host.match?(%r{\A[a-z][a-z0-9+.-]*://}i)
-host = ATProto::Origin.normalize(host)
+begin
+  host = ATProto::Origin.normalize(host)
+rescue ArgumentError => e
+  abort "Invalid server: #{e.message}"
+end
 headers = {
   "Content-Type" => "application/json"
 }

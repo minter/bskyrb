@@ -17,6 +17,7 @@ module ATProto
   class Session
     include RequestUtils
 
+    # `pds` is the validated, canonical origin; prefer it over `credentials.pds`.
     attr_reader :credentials, :pds, :access_token, :refresh_token, :did, :service_endpoint
 
     def initialize(credentials, should_open = true)
@@ -88,9 +89,9 @@ module ATProto
 
     def service_endpoint_for(did_doc)
       endpoint = did_doc_service_endpoint(did_doc) || did_doc_service_endpoint(resolve_did_doc)
-      endpoint_host = endpoint && URI.parse(endpoint).host
+      endpoint_host = endpoint && URI.parse(Origin.normalize(endpoint)).host
       "did:web:#{endpoint_host || URI.parse(pds).host}"
-    rescue URI::InvalidURIError
+    rescue URI::InvalidURIError, ArgumentError
       "did:web:#{URI.parse(pds).host}"
     end
 
