@@ -948,12 +948,17 @@ module Bskyrb
     include ATProto::RequestUtils
     include PostTools
 
-    attr_accessor :text, :timestamp, :facets, :embed, :pds
+    attr_accessor :text, :timestamp, :facets, :embed
+    attr_reader :pds
 
     def initialize(text, timestamp: DateTime.now.iso8601(3), pds: "https://bsky.social")
       @text = text
       @timestamp = timestamp
-      @pds = pds
+      self.pds = pds
+    end
+
+    def pds=(value)
+      @pds = ATProto::Origin.normalize(value)
     end
 
     def to_json_hash

@@ -2,6 +2,7 @@ require "secp256k1"
 require "bigdecimal"
 require "httparty"
 require "json"
+require_relative "../lib/atproto/origin"
 require_relative "secret_input"
 
 B58BT = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
@@ -42,7 +43,12 @@ print "And finally: What's your invite code? "
 invite_code = (STDIN.gets || "").chomp
 
 host = "https://bsky.social" if host.empty?
-host = "https://#{host}" unless host.start_with?("http")
+host = "https://#{host}" unless host.match?(%r{\A[a-z][a-z0-9+.-]*://}i)
+begin
+  host = ATProto::Origin.normalize(host)
+rescue ArgumentError => e
+  abort "Invalid server: #{e.message}"
+end
 headers = {
   "Content-Type" => "application/json"
 }

@@ -1,5 +1,6 @@
 # typed: false
 
+require "atproto/origin"
 require "atproto/requests"
 
 module ATProto
@@ -9,18 +10,19 @@ module ATProto
     def initialize(username, pw, pds = "https://bsky.social")
       @username = username
       @pw = pw
-      @pds = pds # credentials are pds-specific
+      @pds = Origin.normalize(pds) # credentials are pds-specific
     end
   end
 
   class Session
     include RequestUtils
 
+    # `pds` is the validated, canonical origin; prefer it over `credentials.pds`.
     attr_reader :credentials, :pds, :access_token, :refresh_token, :did, :service_endpoint
 
     def initialize(credentials, should_open = true)
       @credentials = credentials
-      @pds = credentials.pds
+      @pds = Origin.normalize(credentials.pds)
       open! if should_open
     end
 
@@ -87,9 +89,9 @@ module ATProto
 
     def service_endpoint_for(did_doc)
       endpoint = did_doc_service_endpoint(did_doc) || did_doc_service_endpoint(resolve_did_doc)
-      endpoint_host = endpoint && URI.parse(endpoint).host
+      endpoint_host = endpoint && URI.parse(Origin.normalize(endpoint)).host
       "did:web:#{endpoint_host || URI.parse(pds).host}"
-    rescue URI::InvalidURIError
+    rescue URI::InvalidURIError, ArgumentError
       "did:web:#{URI.parse(pds).host}"
     end
 

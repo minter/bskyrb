@@ -44,7 +44,7 @@ Create a new session:
 require 'bskyrb'
 username = 'your_username'
 password = 'your_password'
-pds_url = 'https://bsky.social' # Optional, defaults to https://bsky.social
+pds_url = 'https://bsky.social' # Optional, defaults to https://bsky.social. Must be a bare HTTPS origin (http:// only for localhost)
 
 # Initialize session
 credentials = ATProto::Credentials.new(username, password, pds_url)

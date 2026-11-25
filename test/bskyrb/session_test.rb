@@ -5,6 +5,27 @@ require "test_helper"
 
 module Bskyrb
   class SessionTest < Minitest::Test
+    def test_credentials_reject_cleartext_pds_origin
+      assert_raises(ArgumentError) do
+        ATProto::Credentials.new("user.test", "password", "http://pds.example")
+      end
+    end
+
+    def test_credentials_canonicalize_and_freeze_https_pds_origin
+      credentials = ATProto::Credentials.new("user.test", "password", "https://pds.example:8443/")
+
+      assert_equal "https://pds.example:8443", credentials.pds
+      assert credentials.pds.frozen?
+    end
+
+    def test_session_revalidates_alternate_credentials_objects
+      credentials = Struct.new(:username, :pw, :pds).new("user.test", "password", "http://pds.example")
+
+      assert_raises(ArgumentError) do
+        ATProto::Session.new(credentials, false)
+      end
+    end
+
     def test_create_session_with_valid_credentials_returns_an_open_session
       stub_request(:post, "https://bsky.social/xrpc/com.atproto.server.createSession").to_return(
         status: 200,

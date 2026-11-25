@@ -1,5 +1,6 @@
 ## [Unreleased]
 
+- **Breaking:** PDS URLs are now validated as bare HTTPS origins (no userinfo, path, query, or fragment) by `ATProto::Credentials`, `ATProto::Session`, and `Bskyrb::PostRecord`. Cleartext `http://` is accepted only for `localhost`, `127.0.0.1`, and `[::1]` (local development PDS)
 - Add `embed_record:` to `create_post`, `create_reply`, and `create_post_or_reply` for native quote posts, combined with images, video, or a link card via `app.bsky.embed.recordWithMedia`
 - Support up to 10 image attachments per post using Bluesky's gallery embed for posts with 5 or more images
 - Raise video upload size limit to 300MB to match Bluesky's maximum
