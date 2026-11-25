@@ -2,11 +2,8 @@ require "secp256k1"
 require "bigdecimal"
 require "httparty"
 require "json"
-<<<<<<< HEAD
 require_relative "../lib/atproto/origin"
-=======
 require_relative "secret_input"
->>>>>>> origin/main
 
 B58BT = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 
