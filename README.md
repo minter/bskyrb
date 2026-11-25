@@ -97,6 +97,10 @@ rescue => e
 end
 ```
 
+Opening a session raises `ATProto::UnauthorizedError` for bad credentials and `ATProto::HTTPError`
+for any other failed login or token refresh (rate limits, auth-factor challenges, takedowns). The error
+message includes the server's error code.
+
 #### Logging
 
 By default, bskyrb logs at the `WARN` level to stdout. You can configure the logger to see more detail or redirect output:
@@ -146,10 +150,31 @@ Images are automatically optimized to fit Bluesky's limits:
 - Image quality is preserved while reducing file size
 - Supports both local files and remote URLs
 
+Image processing runs ImageMagick under resource limits and a 10-second timeout per command, so a
+hostile or enormous image can't exhaust the host. The defaults are `MAGICK_AREA_LIMIT=100MP`,
+`MAGICK_MEMORY_LIMIT=1GiB`, `MAGICK_MAP_LIMIT=2GiB`, `MAGICK_DISK_LIMIT=512MiB`,
+`MAGICK_FILE_LIMIT=32` and `MAGICK_THREAD_LIMIT=1`. These handle photos up to about 100 megapixels,
+which covers current phone and most camera sensors. Any of these already set in the process environment
+take precedence, as does a `MiniMagick.timeout` you have set yourself. An image that can't be processed
+within the limits is left out of the post, and the error is logged.
+
+#### Remote link previews and images
+
 Remote preview and image URLs must be absolute HTTP(S) URLs whose DNS records resolve only to public
 addresses. Redirects are checked under the same policy, so loopback, private, link-local, reserved,
 and metadata-service destinations are rejected before a request is sent. Public HTML previews and
 public image responses continue to be supported.
+
+What happens when a fetch fails:
+- If the `embed_url:` host resolves to a non-public address, `create_post` and `create_reply` raise
+  `Bskyrb::PostTools::BlockedRemoteAddressError` and nothing is posted.
+- If the `embed_url:` page can't be fetched for any other reason (unreachable, timed out, HTTP error,
+  not HTML, larger than 2MB), the post still goes out with a plain link card and a warning is logged.
+- If a remote image or link-card thumbnail can't be fetched (blocked address, error, not an image,
+  larger than 20MB), it is skipped and the error is logged.
+
+Each fetch has a 10-second connect timeout, a 15-second read timeout and a 30-second overall limit,
+and follows at most 5 redirects.
 
 Environment proxy settings (`http_proxy`, `https_proxy`) are ignored for these fetches, so every
 request connects to the exact address that passed the check. If your deployment can only reach the
@@ -276,6 +301,16 @@ After checking out the repo, run `bin/setup` to install dependencies. You can al
 
 To install this gem onto your local machine, run `bundle exec rake install`. To release a new version, run `./deploy.sh` and you will be guided through updating the version number, bundling the gem, and pushing it to RubyGems. You must be signed in with a RubyGems account that has push access to bskyrb.
 
+### Registering an account
+
+`experiments/register.rb` creates an account on a PDS with a fresh secp256k1 recovery key. It saves the
+private key to `~/.bskyrb/<did>.key` before asking any questions. Set `BSKYRB_KEY_DIR` to use a
+different directory. The directory must belong to you and must not be readable by other users (it is
+created with mode `0700` if missing), and the key file is created with mode `0600`. An existing key file
+is never overwritten. The password is hidden as you type and asked for twice. The server must be HTTPS
+(HTTP is accepted only for localhost). Back up the key file to encrypted storage: it is the account's
+recovery key.
+
 ## Dependencies
 
 The gem requires the following runtime dependencies:
@@ -315,6 +350,8 @@ bin/codegen /path/to/atproto
 bin/codegen /path/to/atproto/lexicons
 BSKYRB_LEXICONS=/path/to/atproto bin/codegen
 ```
+
+Code generation stops with an error if a lexicon name can't be a Ruby constant or a property name can't be a Ruby attribute. This keeps a malformed or malicious lexicon from injecting code into the gem.
 
 This crawls the lexicon directory, generates formatted Ruby classes in `lib/bskyrb/generated_classes.rb`, and regenerates `sig/generated_classes.rbs`. The generated classes are shallow data wrappers: nested refs, unions, blobs, and unknown values remain raw hashes/values instead of being recursively hydrated. You can hydrate a top-level object like so:
 
