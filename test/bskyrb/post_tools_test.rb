@@ -732,6 +732,14 @@ module Bskyrb
       stub_request(:get, url).to_return(status: 200, body: "image bytes", headers: {"Content-Type" => "image/jpeg"})
     end
 
+    def with_env(overrides)
+      saved = overrides.keys.to_h { |key| [key, ENV[key]] }
+      overrides.each { |key, value| ENV[key] = value }
+      yield
+    ensure
+      saved&.each { |key, value| ENV[key] = value }
+    end
+
     def with_dns(addresses_by_host = {})
       resolver = lambda do |host, _port|
         Array(addresses_by_host.fetch(host, "93.184.216.34"))
@@ -759,6 +767,155 @@ module Bskyrb
 
       assert_requested :get, "https://cdn.example.com/pic.jpg"
       assert_equal ["image bytes"], @harness.uploaded_images
+    end
+
+    def test_falls_back_to_minimal_card_when_page_returns_an_error_status
+      stub_request(:get, "https://example.com/post").to_return(status: 403, body: "nope")
+
+      embed = with_dns { @harness.create_test_external_embed("https://example.com/post") }
+
+      assert_equal "app.bsky.embed.external", embed["$type"]
+      assert_equal "https://example.com/post", embed["external"]["uri"]
+      assert_equal "", embed["external"]["title"]
+      assert_equal "", embed["external"]["description"]
+      refute embed["external"].key?("thumb")
+    end
+
+    def test_falls_back_to_minimal_card_when_page_is_not_html
+      stub_request(:get, "https://example.com/doc.pdf")
+        .to_return(status: 200, body: "%PDF", headers: {"Content-Type" => "application/pdf"})
+
+      embed = with_dns { @harness.create_test_external_embed("https://example.com/doc.pdf") }
+
+      assert_equal "https://example.com/doc.pdf", embed["external"]["uri"]
+      assert_equal "", embed["external"]["title"]
+    end
+
+    def test_falls_back_to_minimal_card_when_content_type_is_missing
+      stub_request(:get, "https://example.com/post").to_return(status: 200, body: "<html></html>", headers: {})
+
+      embed = with_dns { @harness.create_test_external_embed("https://example.com/post") }
+
+      assert_equal "https://example.com/post", embed["external"]["uri"]
+      assert_equal "", embed["external"]["title"]
+    end
+
+    def test_accepts_images_served_as_generic_binary
+      stub_page("https://example.com/post", "https://bucket.s3.amazonaws.com/pic.jpg")
+      stub_request(:get, "https://bucket.s3.amazonaws.com/pic.jpg")
+        .to_return(status: 200, body: "image bytes", headers: {"Content-Type" => "binary/octet-stream"})
+
+      embed = with_dns { @harness.create_test_external_embed("https://example.com/post") }
+
+      assert_equal ["image bytes"], @harness.uploaded_images
+      assert embed["external"]["thumb"]
+    end
+
+    def test_falls_through_to_the_next_address_when_one_is_unreachable
+      uri = @harness.send(:normalize_remote_uri, "https://example.com/post")
+      tried = []
+      fake = Struct.new(:address, :tried) do
+        def start
+          tried << address
+          raise Errno::ENETUNREACH if address.include?(":")
+          self
+        end
+      end
+      builder = ->(_uri, address) { fake.new(address, tried) }
+
+      http = with_remote_fetch_proxy(nil) do
+        @harness.stub(:remote_http, builder) do
+          @harness.send(:start_remote_http, uri, ["2606:2800:220:1::1", "93.184.216.34"])
+        end
+      end
+
+      assert_equal ["2606:2800:220:1::1", "93.184.216.34"], tried
+      assert_equal "93.184.216.34", http.address
+    end
+
+    def test_raises_remote_fetch_error_when_no_address_is_reachable
+      uri = @harness.send(:normalize_remote_uri, "https://example.com/post")
+      failing = Object.new
+      def failing.start = raise(Errno::ECONNREFUSED)
+
+      error = assert_raises(PostTools::RemoteFetchError) do
+        with_remote_fetch_proxy(nil) do
+          @harness.stub(:remote_http, ->(_u, _a) { failing }) do
+            @harness.send(:start_remote_http, uri, ["93.184.216.34", "93.184.216.35"])
+          end
+        end
+      end
+      assert_match(/Could not connect/, error.message)
+    end
+
+    def with_remote_fetch_proxy(value)
+      saved = Bskyrb.remote_fetch_proxy
+      Bskyrb.remote_fetch_proxy = value
+      yield
+    ensure
+      Bskyrb.remote_fetch_proxy = saved
+    end
+
+    def test_ignores_environment_proxy_and_pins_the_address
+      uri = @harness.send(:normalize_remote_uri, "https://example.com/post")
+
+      http = with_env("https_proxy" => "http://proxy.internal:3128", "HTTPS_PROXY" => "http://proxy.internal:3128") do
+        @harness.send(:remote_http, uri, "93.184.216.34")
+      end
+
+      refute http.proxy?
+      assert_equal "93.184.216.34", http.ipaddr
+    end
+
+    def test_uses_an_explicitly_configured_proxy
+      uri = @harness.send(:normalize_remote_uri, "https://example.com/post")
+
+      http = with_remote_fetch_proxy("http://proxy.internal:3128") do
+        @harness.send(:remote_http, uri, "93.184.216.34")
+      end
+
+      assert http.proxy?
+      assert_equal "proxy.internal", http.proxy_address
+      assert_equal 3128, http.proxy_port
+      assert_nil http.ipaddr
+    end
+
+    def test_rejects_a_non_http_configured_proxy
+      uri = @harness.send(:normalize_remote_uri, "https://example.com/post")
+
+      assert_raises(PostTools::RemoteFetchError) do
+        with_remote_fetch_proxy("socks5://proxy.internal:1080") do
+          @harness.send(:remote_http, uri, "93.184.216.34")
+        end
+      end
+    end
+
+    def test_rejected_image_url_returns_nil_instead_of_raising
+      metadata = @harness.send(
+        :download_and_upload_image_with_metadata,
+        Addressable::URI.parse("https://user:secret@images.example.com/a.png"),
+        @harness
+      )
+
+      assert_nil metadata
+      assert_empty @harness.uploaded_images
+    end
+
+    def test_missing_content_type_raises_remote_fetch_error
+      response = Net::HTTPOK.new("1.1", "200", "OK")
+
+      assert_raises(PostTools::RemoteFetchError) do
+        @harness.send(:validate_remote_content_type!, response, PostTools::REMOTE_PAGE_CONTENT_TYPES)
+      end
+    end
+
+    def test_still_raises_when_the_page_itself_is_non_public
+      assert_raises(PostTools::BlockedRemoteAddressError) do
+        with_dns("example.com" => "127.0.0.1") do
+          @harness.create_test_external_embed("https://example.com/post")
+        end
+      end
+      assert_not_requested :get, "https://example.com/post"
     end
 
     def test_omits_thumb_when_the_thumbnail_cannot_be_uploaded

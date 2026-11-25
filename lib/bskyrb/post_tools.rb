@@ -34,7 +34,18 @@ module Bskyrb
     NON_LINK_TLDS = %w[avif gif jpeg jpg png svg webp].freeze
     REMOTE_REDIRECT_LIMIT = 5
     REMOTE_PAGE_CONTENT_TYPES = %w[text/html application/xhtml+xml].freeze
-    REMOTE_IMAGE_CONTENT_TYPES = ["image/"].freeze
+    # Many object stores (S3 in particular) serve images as a generic binary
+    # type or with no Content-Type at all; MiniMagick rejects non-images later.
+    REMOTE_IMAGE_CONTENT_TYPES = ["image/", "application/octet-stream", "binary/octet-stream", ""].freeze
+    # Connection failures that mean "try the next resolved address".
+    REMOTE_CONNECT_ERRORS = [
+      Errno::ECONNREFUSED,
+      Errno::EHOSTUNREACH,
+      Errno::ENETUNREACH,
+      Errno::EADDRNOTAVAIL,
+      Errno::ETIMEDOUT,
+      Net::OpenTimeout
+    ].freeze
     BLOCKED_REMOTE_NETWORKS = %w[
       0.0.0.0/8
       10.0.0.0/8
@@ -71,6 +82,11 @@ module Bskyrb
     ].map { |network| IPAddr.new(network) }.freeze
 
     class RemoteFetchError < ArgumentError
+    end
+
+    # Raised when a URL (or a redirect target) points at a non-public address.
+    # Unlike other fetch failures, this is never softened into a fallback.
+    class BlockedRemoteAddressError < RemoteFetchError
     end
 
     # Check if two facets have overlapping byte ranges
@@ -396,16 +412,16 @@ module Bskyrb
       raise RemoteFetchError, "Could not resolve remote host: #{e.message}"
     end
 
-    def public_remote_address(uri)
+    def public_remote_addresses(uri)
       addresses = resolve_remote_addresses(uri.hostname, uri.port)
       raise RemoteFetchError, "Remote host did not resolve to an address" if addresses.empty?
 
       parsed_addresses = addresses.map { |address| IPAddr.new(address) }
       if parsed_addresses.any? { |address| blocked_remote_address?(address) }
-        raise RemoteFetchError, "Remote host resolves to a non-public address"
+        raise BlockedRemoteAddressError, "Remote host resolves to a non-public address"
       end
 
-      addresses.first
+      addresses
     rescue IPAddr::InvalidAddressError => e
       raise RemoteFetchError, "Remote host resolved to an invalid address: #{e.message}"
     end
@@ -416,15 +432,54 @@ module Bskyrb
       end
     end
 
+    # Environment proxy settings are deliberately ignored: through a proxy the
+    # connection can't be pinned to the validated address, which reopens DNS
+    # rebinding. A proxy is used only when Bskyrb.remote_fetch_proxy is set.
+    def remote_proxy_uri(_uri)
+      configured = Bskyrb.remote_fetch_proxy
+      return nil if configured.nil? || configured.to_s.strip.empty?
+
+      proxy = URI.parse(configured.to_s)
+      unless proxy.is_a?(URI::HTTP) && proxy.hostname && !proxy.hostname.empty?
+        raise RemoteFetchError, "Bskyrb.remote_fetch_proxy must be an http(s) URL"
+      end
+
+      proxy
+    rescue URI::InvalidURIError => e
+      raise RemoteFetchError, "Invalid Bskyrb.remote_fetch_proxy: #{e.message}"
+    end
+
     def remote_http(uri, address)
-      http = Net::HTTP.new(uri.hostname, uri.port, nil)
-      http.ipaddr = address
+      proxy = remote_proxy_uri(uri)
+      http = if proxy
+        Net::HTTP.new(uri.hostname, uri.port, proxy.hostname, proxy.port,
+          proxy.user && URI.decode_www_form_component(proxy.user),
+          proxy.password && URI.decode_www_form_component(proxy.password))
+      else
+        Net::HTTP.new(uri.hostname, uri.port, nil).tap { |h| h.ipaddr = address }
+      end
       http.use_ssl = uri.scheme == "https"
       http
     end
 
+    # Connects to the first reachable validated address, so a dual-stack host
+    # still works when this machine can't route one address family.
+    def start_remote_http(uri, addresses)
+      addresses = addresses.first(1) if remote_proxy_uri(uri)
+      last_error = nil
+      addresses.each do |address|
+        http = remote_http(uri, address)
+        begin
+          return http.start
+        rescue *REMOTE_CONNECT_ERRORS => e
+          last_error = e
+        end
+      end
+      raise RemoteFetchError, "Could not connect to remote host: #{last_error.message}"
+    end
+
     def validate_remote_content_type!(response, expected_content_types)
-      content_type = response["content-type"].to_s.split(";", 2).first.strip.downcase
+      content_type = response["content-type"].to_s.split(";", 2).first.to_s.strip.downcase
       accepted = expected_content_types.any? do |expected|
         expected.end_with?("/") ? content_type.start_with?(expected) : content_type == expected
       end
@@ -437,11 +492,12 @@ module Bskyrb
       uri = normalize_remote_uri(value)
 
       loop do
-        address = public_remote_address(uri)
+        addresses = public_remote_addresses(uri)
         redirect_location = nil
         result = nil
 
-        remote_http(uri, address).start do |http|
+        http = start_remote_http(uri, addresses)
+        begin
           request = Net::HTTP::Get.new(uri.request_uri)
           http.request(request) do |response|
             case response
@@ -457,6 +513,8 @@ module Bskyrb
               raise RemoteFetchError, "Remote request returned HTTP #{response.code}"
             end
           end
+        ensure
+          http.finish if http.started?
         end
 
         return result unless redirect_location
@@ -470,11 +528,21 @@ module Bskyrb
 
     def create_external_embed(embed_url, client)
       requested_uri = normalize_remote_uri(embed_url)
-      page_body, page_uri = fetch_remote_resource(
-        requested_uri,
-        expected_content_types: REMOTE_PAGE_CONTENT_TYPES
-      ) do |response, final_uri|
-        [response.body, final_uri]
+      begin
+        page_body, page_uri = fetch_remote_resource(
+          requested_uri,
+          expected_content_types: REMOTE_PAGE_CONTENT_TYPES
+        ) do |response, final_uri|
+          [response.body, final_uri]
+        end
+      rescue BlockedRemoteAddressError
+        raise
+      rescue RemoteFetchError => e
+        # A page we can't read (403, 404, non-HTML, DNS failure...) still gets
+        # a minimal link card rather than sinking the whole post.
+        Bskyrb.logger.warn("Using minimal external embed for #{requested_uri}: #{e.message}")
+        page_body = ""
+        page_uri = requested_uri
       end
       doc = Nokogiri::HTML.parse(page_body)
       og_data = {
@@ -613,9 +681,10 @@ module Bskyrb
     end
 
     def download_and_upload_image_with_metadata(uri, client)
-      uri = normalize_remote_uri(uri)
-      tempfile = Tempfile.new(["thumb", File.extname(uri.path)])
+      tempfile = nil
       begin
+        uri = normalize_remote_uri(uri)
+        tempfile = Tempfile.new(["thumb", File.extname(uri.path)])
         fetch_remote_resource(uri, expected_content_types: REMOTE_IMAGE_CONTENT_TYPES) do |response, _final_uri|
           File.open(tempfile.path, "wb") do |io|
             response.read_body do |chunk|
@@ -628,8 +697,8 @@ module Bskyrb
         Bskyrb.logger.error("Error downloading image: #{e.message}")
         nil
       ensure
-        tempfile.close
-        tempfile.unlink
+        tempfile&.close
+        tempfile&.unlink
       end
     end
 
