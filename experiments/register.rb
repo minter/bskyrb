@@ -2,6 +2,7 @@ require "secp256k1"
 require "bigdecimal"
 require "httparty"
 require "json"
+require_relative "../lib/atproto/origin"
 
 B58BT = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 
@@ -42,7 +43,8 @@ print "And finally: What's your invite code? "
 invite_code = (gets || "").chomp
 
 host = "https://bsky.social" if host.empty?
-host = "https://#{host}" unless host.start_with?("http")
+host = "https://#{host}" unless host.match?(%r{\A[a-z][a-z0-9+.-]*://}i)
+host = ATProto::Origin.normalize(host)
 headers = {
   "Content-Type" => "application/json"
 }

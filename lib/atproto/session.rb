@@ -1,5 +1,6 @@
 # typed: false
 
+require "atproto/origin"
 require "atproto/requests"
 
 module ATProto
@@ -9,7 +10,7 @@ module ATProto
     def initialize(username, pw, pds = "https://bsky.social")
       @username = username
       @pw = pw
-      @pds = pds # credentials are pds-specific
+      @pds = Origin.normalize(pds) # credentials are pds-specific
     end
   end
 
@@ -20,7 +21,7 @@ module ATProto
 
     def initialize(credentials, should_open = true)
       @credentials = credentials
-      @pds = credentials.pds
+      @pds = Origin.normalize(credentials.pds)
       open! if should_open
     end
 

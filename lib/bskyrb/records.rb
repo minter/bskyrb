@@ -17,7 +17,7 @@ module Bskyrb
 
     def initialize(session)
       @session = session
-      @pds = session.credentials.pds
+      @pds = session.pds
     end
 
     def create_record(input)
