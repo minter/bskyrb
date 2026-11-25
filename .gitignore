@@ -13,4 +13,4 @@ node_modules/
 lib/bskytest.rb
 .byebug_history
 *.gem
-*.key
+experiments/*.key
