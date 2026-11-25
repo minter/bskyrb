@@ -7,7 +7,7 @@ gemspec
 
 group :development do
   gem "debug"
-  gem "minitest"
+  gem "minitest", "~> 6.1"
   gem "parallel", "1.10.0"
   gem "rake", "13.0.6"
   gem "rbs"
