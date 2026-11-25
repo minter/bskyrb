@@ -1,4 +1,6 @@
 require "uri"
+require "net/http"
+require "timeout"
 require_relative "../atproto/requests"
 require "xrpc"
 require "nokogiri"
@@ -21,6 +23,26 @@ module Bskyrb
   module PostTools
     IMAGE_EMBED_MAX_IMAGES = 4
     GALLERY_EMBED_MAX_ITEMS = 10
+    REMOTE_HTML_MAX_BYTES = 1 * 1024 * 1024
+    REMOTE_IMAGE_MAX_BYTES = 20 * 1024 * 1024
+    REMOTE_OPEN_TIMEOUT = 5
+    REMOTE_READ_TIMEOUT = 5
+    REMOTE_TOTAL_TIMEOUT = 15
+    REMOTE_REDIRECT_LIMIT = 3
+    IMAGE_UPLOAD_MAX_BYTES = 1950 * 1024
+    IMAGE_MAX_DIMENSION = 4000
+    IMAGE_PROCESSING_TIMEOUT = 10
+    HTML_CONTENT_TYPES = %w[text/html application/xhtml+xml].freeze
+    IMAGE_CONTENT_TYPE = %r{\Aimage/(?:avif|gif|jpeg|png|webp)\z}
+    IMAGE_MAGICK_RESOURCE_LIMITS = {
+      "MAGICK_AREA_LIMIT" => "32MP",
+      "MAGICK_MEMORY_LIMIT" => "64MiB",
+      "MAGICK_MAP_LIMIT" => "64MiB",
+      "MAGICK_DISK_LIMIT" => "128MiB",
+      "MAGICK_FILE_LIMIT" => "16",
+      "MAGICK_THREAD_LIMIT" => "1",
+      "MAGICK_TIME_LIMIT" => IMAGE_PROCESSING_TIMEOUT.to_s
+    }.freeze
     DEFAULT_IMAGE_ASPECT_RATIO = {"width" => 1, "height" => 1}.freeze
     MENTION_PATTERN = /(^|\s|\()(@)([a-zA-Z0-9.-]+)(\b)/
     URL_PATTERN = /(^|\s|\()((https?:\/\/\S+)|(([a-z][a-z0-9]*(\.[a-z0-9]+)+)\S*))/i
@@ -29,6 +51,13 @@ module Bskyrb
     TAG_PATTERN = /(^|\s)([#＃])((?!\ufe0f)[^\s#{ZERO_WIDTH_TAG_CHARS}]*[^\d\s\p{P}#{ZERO_WIDTH_TAG_CHARS}]+[^\s#{ZERO_WIDTH_TAG_CHARS}]*)?/u
     CASHTAG_PATTERN = /(^|\s|\()\$([A-Za-z][A-Za-z0-9]{0,4})(?=\s|$|[.,;:!?)"'\u2019])/u
     NON_LINK_TLDS = %w[avif gif jpeg jpg png svg webp].freeze
+
+    class RemoteResourceError < StandardError; end
+
+    IMAGE_MAGICK_RESOURCE_LIMITS.each { |name, value| ENV[name] = value }
+    MiniMagick.configure do |config|
+      config.timeout = IMAGE_PROCESSING_TIMEOUT
+    end
 
     # Check if two facets have overlapping byte ranges
     def facets_overlap?(facet1, facet2)
@@ -335,8 +364,13 @@ module Bskyrb
     end
 
     def create_external_embed(embed_url, client)
-      response = HTTParty.get(embed_url)
-      doc = Nokogiri::HTML.parse(response.body)
+      page_uri = Addressable::URI.parse(embed_url).normalize
+      html = fetch_remote_resource(
+        page_uri,
+        max_bytes: REMOTE_HTML_MAX_BYTES,
+        accepted_content_types: HTML_CONTENT_TYPES
+      )
+      doc = Nokogiri::HTML.parse(html)
       og_data = {
         title: nil,
         description: nil,
@@ -378,6 +412,101 @@ module Bskyrb
     rescue => e
       Bskyrb.logger.warn("Skipping external embed thumbnail #{og_image.inspect} for #{page_url}: #{e.message}")
       nil
+    end
+
+    def fetch_remote_resource(uri, max_bytes:, accepted_content_types:, destination: nil, deadline: nil, redirects: 0)
+      uri = URI.parse(uri.to_s)
+      unless %w[http https].include?(uri.scheme) && uri.host
+        raise RemoteResourceError, "Remote resource must use HTTP or HTTPS"
+      end
+
+      deadline ||= monotonic_time + REMOTE_TOTAL_TIMEOUT
+      remaining = deadline - monotonic_time
+      raise RemoteResourceError, "Remote request exceeded its deadline" unless remaining.positive?
+
+      Timeout.timeout(remaining, RemoteResourceError, "Remote request exceeded its deadline") do
+        http = Net::HTTP.new(uri.host, uri.port)
+        http.use_ssl = uri.scheme == "https"
+        http.open_timeout = [REMOTE_OPEN_TIMEOUT, remaining].min
+        http.read_timeout = [REMOTE_READ_TIMEOUT, remaining].min
+        http.max_retries = 0
+
+        http.start do |connection|
+          request = Net::HTTP::Get.new(uri.request_uri)
+          connection.request(request) do |response|
+            if response.is_a?(Net::HTTPRedirection)
+              return follow_remote_redirect(
+                uri,
+                response,
+                max_bytes: max_bytes,
+                accepted_content_types: accepted_content_types,
+                destination: destination,
+                deadline: deadline,
+                redirects: redirects
+              )
+            end
+
+            unless response.is_a?(Net::HTTPSuccess)
+              raise RemoteResourceError, "Remote server returned HTTP #{response.code}"
+            end
+
+            validate_remote_response!(response, max_bytes, accepted_content_types)
+            read_bounded_response(response, max_bytes, destination)
+          end
+        end
+      end
+    end
+
+    def follow_remote_redirect(uri, response, max_bytes:, accepted_content_types:, destination:, deadline:, redirects:)
+      if redirects >= REMOTE_REDIRECT_LIMIT || response["location"].to_s.empty?
+        raise RemoteResourceError, "Remote response exceeded the redirect limit"
+      end
+
+      redirect_uri = URI.join(uri.to_s, response["location"])
+      fetch_remote_resource(
+        redirect_uri,
+        max_bytes: max_bytes,
+        accepted_content_types: accepted_content_types,
+        destination: destination,
+        deadline: deadline,
+        redirects: redirects + 1
+      )
+    end
+
+    def validate_remote_response!(response, max_bytes, accepted_content_types)
+      content_length = response["content-length"]
+      if content_length
+        parsed_length = Integer(content_length, exception: false)
+        if parsed_length.nil? || parsed_length.negative? || parsed_length > max_bytes
+          raise RemoteResourceError, "Remote response exceeds #{max_bytes} bytes"
+        end
+      end
+
+      content_type = response["content-type"].to_s.split(";", 2).first.to_s.strip.downcase
+      accepted = accepted_content_types.any? do |candidate|
+        candidate.is_a?(Regexp) ? candidate.match?(content_type) : candidate == content_type
+      end
+      unless accepted
+        raise RemoteResourceError, "Unexpected remote content type #{content_type.inspect}"
+      end
+    end
+
+    def read_bounded_response(response, max_bytes, destination)
+      body = +"".b unless destination
+      bytes_read = 0
+
+      response.read_body do |chunk|
+        bytes_read += chunk.bytesize
+        raise RemoteResourceError, "Remote response exceeds #{max_bytes} bytes" if bytes_read > max_bytes
+
+        destination ? destination.write(chunk) : body << chunk
+      end
+
+      destination || body
+    end
+
+    def monotonic_time
+      Process.clock_gettime(Process::CLOCK_MONOTONIC)
     end
 
     def create_image_embed(embed_images, client)
@@ -474,16 +603,13 @@ module Bskyrb
     def download_and_upload_image_with_metadata(uri, client)
       tempfile = Tempfile.new(["thumb", File.extname(uri.path)])
       begin
-        # Download the file
-        Net::HTTP.start(uri.host, uri.port, use_ssl: uri.scheme == "https") do |http|
-          request = Net::HTTP::Get.new(uri.to_s)
-          http.request request do |response|
-            File.open(tempfile.path, "wb") do |io|
-              response.read_body do |chunk|
-                io.write chunk
-              end
-            end
-          end
+        File.open(tempfile.path, "wb") do |io|
+          fetch_remote_resource(
+            uri,
+            max_bytes: REMOTE_IMAGE_MAX_BYTES,
+            accepted_content_types: [IMAGE_CONTENT_TYPE],
+            destination: io
+          )
         end
         upload_image_with_metadata(tempfile, client)
       rescue => e
@@ -510,17 +636,25 @@ module Bskyrb
 
       # Bluesky image limits: 2MB per image and 4000x4000 pixels.
       # Target slightly under the byte limit to leave a safety buffer.
-      max_size = 1950 * 1024 # ~1.95MB in bytes
-      max_dimension = 4000
+      max_size = IMAGE_UPLOAD_MAX_BYTES
+      max_dimension = IMAGE_MAX_DIMENSION
       file_path = file.path
-
-      unless image_within_limits?(file_path, max_size, max_dimension)
-        Bskyrb.logger.debug("Image (#{File.size(file_path)} bytes) exceeds size or dimension limit, compressing...")
-        compressed_file = compress_image(file_path, max_size, max_dimension)
-        file_path = compressed_file.path if compressed_file
-      end
+      compressed_file = nil
 
       begin
+        unless image_within_limits?(file_path, max_size, max_dimension)
+          Bskyrb.logger.debug("Image (#{File.size(file_path)} bytes) exceeds size or dimension limit, compressing...")
+          compressed_file = compress_image(file_path, max_size, max_dimension)
+          return nil unless compressed_file
+
+          file_path = compressed_file.path
+          content_type = "image/jpeg"
+          unless image_within_limits?(file_path, max_size, max_dimension)
+            Bskyrb.logger.error("Compressed image still exceeds upload limits")
+            return nil
+          end
+        end
+
         upload_response = client.upload_blob(file_path, content_type)
         return nil unless upload_response&.dig("blob")
         {
@@ -558,10 +692,8 @@ module Bskyrb
       image = MiniMagick::Image.open(file_path)
       image.width <= max_dimension && image.height <= max_dimension
     rescue => e
-      # If we can't inspect the image (e.g. ImageMagick unavailable), let the
-      # upload proceed and rely on the server to validate.
       Bskyrb.logger.debug("Could not inspect image dimensions: #{e.message}")
-      true
+      false
     end
 
     def compress_image(file_path, max_size, max_dimension = 4000)
